@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex">
+    <meta name="theme-color" content="#f5f8fc">
+    <title>Lucimon Library</title>
+    <link rel="stylesheet" href="/assets/styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-main">
+        <a class="brand" href="/" aria-label="Lucimon Library, beranda">
+          <span class="brand-mark" aria-hidden="true">L</span>
+          <span class="brand-copy"><strong>Lucimon Library</strong><small>WIKI IMAJINASI PRIBADI</small></span>
+        </a>
+        <nav class="primary-nav" aria-label="Navigasi utama">
+          <a class="nav-link" href="/" data-nav="home">Beranda</a>
+          <a class="nav-link" href="/#/all" data-nav="all">Semua artikel <span class="nav-count" id="note-count">0</span></a>
+          <a class="nav-link" href="/#/type/Dunia">Dunia</a>
+          <a class="nav-link" href="/#/type/Karakter">Karakter</a>
+          <a class="nav-link" href="/#/type/Alur">Alur</a>
+          <a class="nav-link" href="/#/type/Tempat">Tempat</a>
+          <a class="nav-link" href="/#/type/Catatan">Lainnya</a>
+        </nav>
+        <div class="header-tools">
+          <a class="nav-link" id="admin-link" href="/admin">Masuk</a>
+          <details class="backup-menu">
+            <summary aria-label="Menu cadangan">⋯</summary>
+            <div class="backup-popover">
+              <button id="export-button" type="button">Ekspor cadangan</button>
+              <button id="import-button" type="button">Impor cadangan</button>
+            </div>
+          </details>
+          <button class="button button-primary button-add" id="add-button" type="button"><span aria-hidden="true">＋</span> Artikel baru</button>
+        </div>
+      </div>
+      <div class="header-search-row">
+        <div class="header-search-inner">
+          <div class="wiki-caption"><span class="caption-mark" aria-hidden="true">▤</span><span id="topbar-context">PORTAL CERITA &amp; GAGASAN</span></div>
+          <label class="search-box">
+            <span aria-hidden="true">⌕</span>
+            <input id="search-input" type="search" placeholder="Cari di Lucimon Library" autocomplete="off" aria-label="Cari artikel">
+            <kbd>/</kbd>
+          </label>
+        </div>
+      </div>
+    </header>
+
+    <main class="main-area">
+      <section id="page-content" class="page-content" aria-live="polite"></section>
+      <footer class="footer-note">Lucimon Library · Perpustakaan untuk dunia yang terus tumbuh.</footer>
+    </main>
+
+    <input id="import-file" type="file" accept="application/json,.json" hidden>
+    <dialog id="note-dialog" class="note-dialog">
+      <form id="note-form">
+        <div class="dialog-header">
+          <div><div class="eyebrow">LUCIMON LIBRARY</div><h2 id="dialog-title">Artikel baru</h2></div>
+          <button class="icon-button" id="close-dialog" type="button" aria-label="Tutup">×</button>
+        </div>
+        <input id="field-id" type="hidden">
+        <label class="field-label" for="field-title">Judul <span>*</span></label>
+        <input class="text-field" id="field-title" name="title" maxlength="120" required placeholder="Contoh: Kota yang hidup di atas awan">
+        <div class="field-row">
+          <div class="field-group">
+            <label class="field-label" for="field-type">Jenis artikel</label>
+            <select class="text-field" id="field-type" name="type">
+              <option>Dunia</option><option>Karakter</option><option>Alur</option><option>Tempat</option><option>Catatan</option>
+            </select>
+          </div>
+          <div class="field-group">
+            <label class="field-label" for="field-parent">Bagian dari <span class="optional">(opsional)</span></label>
+            <select class="text-field" id="field-parent" name="parentId"><option value="">Tidak ada (artikel utama)</option></select>
+          </div>
+        </div>
+        <label class="field-label" for="field-visibility">Status artikel</label>
+        <select class="text-field" id="field-visibility" name="visibility">
+          <option value="draft">Draf — hanya terlihat oleh saya</option>
+          <option value="published">Terbit — bisa dibaca tanpa akun</option>
+        </select>
+        <label class="field-label" for="field-summary">Ringkasan <span class="optional">(memudahkan AI memahami artikel)</span></label>
+        <textarea class="text-field summary-field" id="field-summary" name="summary" maxlength="500" rows="2" placeholder="Inti artikel ini dalam beberapa kalimat…"></textarea>
+        <label class="field-label" for="field-content">Isi artikel</label>
+        <div class="field-label" id="content-label">Isi artikel</div>
+        <div class="editor-toolbar" role="toolbar" aria-label="Format isi artikel">
+          <label class="editor-style-label" for="editor-block-style">Gaya</label>
+          <select class="editor-style" id="editor-block-style" aria-label="Gaya paragraf">
+            <option value="p">Paragraf</option>
+            <option value="h2">Judul bagian</option>
+            <option value="h3">Subjudul</option>
+          </select>
+          <span class="editor-toolbar-divider" aria-hidden="true"></span>
+          <button class="editor-tool" type="button" data-command="bold" aria-label="Tebal" title="Tebal"><strong>B</strong></button>
+          <button class="editor-tool" type="button" data-command="italic" aria-label="Miring" title="Miring"><em>I</em></button>
+          <button class="editor-tool" type="button" data-command="underline" aria-label="Garis bawah" title="Garis bawah"><u>U</u></button>
+          <button class="editor-tool" type="button" data-command="normalText" aria-label="Teks normal" title="Hapus format teks">Teks normal</button>
+          <span class="editor-toolbar-divider" aria-hidden="true"></span>
+          <button class="editor-tool" type="button" data-command="insertUnorderedList" aria-label="Daftar poin" title="Daftar poin">• ≡</button>
+          <button class="editor-tool" type="button" data-command="insertOrderedList" aria-label="Daftar bernomor" title="Daftar bernomor">1. ≡</button>
+          <button class="editor-tool" type="button" data-command="blockquote" aria-label="Kutipan" title="Kutipan">❝</button>
+          <button class="editor-tool" type="button" data-command="createLink" aria-label="Tambah tautan" title="Tambah tautan">🔗</button>
+          <button class="editor-tool" type="button" data-command="insertHorizontalRule" aria-label="Garis pemisah" title="Garis pemisah">―</button>
+        </div>
+        <div class="text-field rich-editor" id="field-content" contenteditable="true" role="textbox" aria-multiline="true" aria-labelledby="content-label" data-placeholder="Mulai tulis ceritamu di sini…"></div>
+        <small class="field-hint">Tulis isi cerita. Pilih teks lalu gunakan tombol format seperti di Word.</small>
+        <label class="field-label" for="field-image">Gambar atau thumbnail</label>
+        <input class="text-field file-field" id="field-image" type="file" accept="image/jpeg,image/png,image/webp,image/gif">
+        <small class="field-hint">JPEG, PNG, WebP, atau GIF. Maksimal 5 MB. Gambar disimpan di Cloudflare R2.</small>
+        <div class="image-preview-wrap" id="image-preview-wrap" hidden>
+          <img id="image-preview" alt="Pratinjau gambar artikel">
+          <button class="button button-quiet" id="remove-image" type="button">Hapus gambar</button>
+        </div>
+        <label class="field-label" for="related-search">Terhubung dengan <span class="optional">(opsional, bisa pilih banyak)</span></label>
+        <input class="text-field related-search" id="related-search" type="search" placeholder="Cari artikel untuk dihubungkan…" autocomplete="off">
+        <div class="related-selected-count" id="related-selected-count" aria-live="polite">Belum ada artikel yang dipilih.</div>
+        <div class="related-options" id="related-options" role="group" aria-describedby="related-hint"></div>
+        <small class="field-hint" id="related-hint">Centang sebanyak artikel yang ingin dihubungkan. Kosongkan jika cerita berdiri sendiri.</small>
+        <label class="field-label" for="field-tags">Tag <span class="optional">(pisahkan dengan koma)</span></label>
+        <input class="text-field" id="field-tags" name="tags" placeholder="misalnya: sihir, masa lalu, konflik">
+        <div class="dialog-actions">
+          <button class="button button-quiet" id="cancel-dialog" type="button">Batal</button>
+          <button class="button button-primary" id="save-button" type="submit">Simpan artikel</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="/scripts/app.js"></script>
+  </body>
+</html>
