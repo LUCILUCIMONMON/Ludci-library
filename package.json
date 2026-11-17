@@ -1,0 +1,24 @@
+{
+  "name": "lucimon-library",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Personal story and idea wiki",
+  "scripts": {
+    "start": "wrangler dev --var LOCAL_DEV_AUTH:true --var ADMIN_EMAIL:owner@example.test --ip 127.0.0.1 --port 8787",
+    "dev": "wrangler dev --var LOCAL_DEV_AUTH:true --var ADMIN_EMAIL:owner@example.test --ip 127.0.0.1 --port 8787",
+    "deploy": "wrangler deploy",
+    "legacy": "node server.js",
+    "db:apply:local": "wrangler d1 migrations apply lucimonlibrary --local",
+    "db:apply:remote": "wrangler d1 migrations apply lucimonlibrary --remote"
+  },
+  "dependencies": {
+    "jose": "^6.1.3",
+    "sanitize-html": "^2.18.2"
+  },
+  "devDependencies": {
+    "wrangler": "^4.45.0"
+  },
+  "engines": {
+    "node": ">=22.14.0"
+  }
+}
