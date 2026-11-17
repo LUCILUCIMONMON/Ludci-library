@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "lucimon-library",
+  "name": "ludci-library",
   "main": "worker/index.js",
   "compatibility_date": "2026-11-17",
   "account_id": "0fd3d23494eec3b1cb2c13ebbc099634",
@@ -21,12 +21,6 @@
       "database_name": "lucimonlibrary",
       "database_id": "659e34f6-162d-4385-b299-cd25f47da788",
       "migrations_dir": "migrations"
-    }
-  ],
-  "r2_buckets": [
-    {
-      "binding": "IMAGES",
-      "bucket_name": "lucimon-library-images"
     }
   ],
   "observability": {

@@ -494,7 +494,7 @@
       link.download = `lucimon-library-cadangan-${new Date().toISOString().slice(0, 10)}.json`;
       link.click();
       URL.revokeObjectURL(url);
-      showToast("Cadangan artikel diunduh. Gambar tetap tersimpan di Cloudflare R2.");
+      showToast("Cadangan artikel diunduh. Gambar tetap tersimpan di D1.");
     } catch (error) {
       console.error("Gagal mengekspor cadangan:", error);
       showToast(error.message);
@@ -548,9 +548,9 @@
   imageField.addEventListener("change", () => {
     const file = imageField.files[0];
     if (!file) return;
-    if (!["image/jpeg", "image/png", "image/webp", "image/gif"].includes(file.type) || file.size > 5 * 1024 * 1024) {
+    if (!["image/jpeg", "image/png", "image/webp", "image/gif"].includes(file.type) || file.size > 1024 * 1024) {
       imageField.value = "";
-      showToast("Pilih gambar JPEG, PNG, WebP, atau GIF berukuran maksimal 5 MB.");
+      showToast("Pilih gambar JPEG, PNG, WebP, atau GIF berukuran maksimal 1 MB.");
       return;
     }
     releasePreviewUrl();

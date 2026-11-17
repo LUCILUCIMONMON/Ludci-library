@@ -8,7 +8,7 @@ const IMAGE_TYPES = new Map([
   ["image/webp", "webp"],
   ["image/gif", "gif"]
 ]);
-const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 1024 * 1024;
 const CONTENT_SANITIZER_OPTIONS = {
   allowedTags: [
     "p", "br", "h2", "h3", "h4", "strong", "b", "em", "i", "u", "s",
@@ -505,7 +505,7 @@ async function uploadImage(request, env, identity) {
   const match = body.data.match(/^data:([^;,]+);base64,([A-Za-z0-9+/=]+)$/);
   if (!match || match[1].toLowerCase() !== mime) throw new InputError("Data gambar tidak valid.");
   const binary = atob(match[2]);
-  if (!binary.length || binary.length > MAX_IMAGE_BYTES) throw new InputError("Ukuran gambar maksimal 5 MB.");
+  if (!binary.length || binary.length > MAX_IMAGE_BYTES) throw new InputError("Ukuran gambar maksimal 1 MB.");
   const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
   const signatures = {
     "image/jpeg": [0xff, 0xd8, 0xff],
@@ -522,16 +522,10 @@ async function uploadImage(request, env, identity) {
   }
   const key = `images/${crypto.randomUUID()}.${extension}`;
   const now = new Date().toISOString();
-  await env.IMAGES.put(key, bytes, { httpMetadata: { contentType: mime } });
-  try {
-    await env.DB.prepare(`
-      INSERT INTO image_assets (key, owner_id, content_type, byte_size, created_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).bind(key, identity.id, mime, bytes.length, now).run();
-  } catch (error) {
-    await env.IMAGES.delete(key);
-    throw error;
-  }
+  await env.DB.prepare(`
+    INSERT INTO image_assets (key, owner_id, content_type, byte_size, data, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).bind(key, identity.id, mime, bytes.length, bytes, now).run();
   return { imageKey: key, imageUrl: `/media/${encodeURIComponent(key)}` };
 }
 
@@ -542,20 +536,26 @@ async function deleteImage(env, identity, key) {
   const usage = await env.DB.prepare("SELECT COUNT(*) AS count FROM articles WHERE image_key = ?")
     .bind(key).first();
   if (Number(usage?.count) > 0) throw new InputError("Gambar masih dipakai oleh artikel.");
-  await env.IMAGES.delete(key);
   await env.DB.prepare("DELETE FROM image_assets WHERE key = ? AND owner_id = ?")
     .bind(key, identity.id).run();
   return true;
 }
 
 async function imageResponse(env, key) {
-  const object = await env.IMAGES.get(key);
-  if (!object) return new Response("Not found", { status: 404 });
-  const headers = new Headers();
-  object.writeHttpMetadata(headers);
-  headers.set("Cache-Control", "private, no-store");
-  headers.set("X-Content-Type-Options", "nosniff");
-  return new Response(object.body, { headers });
+  const image = await env.DB.prepare("SELECT content_type, hex(data) AS data_hex FROM image_assets WHERE key = ?")
+    .bind(key).first();
+  if (!image?.data_hex) return new Response("Not found", { status: 404 });
+  const bytes = new Uint8Array(image.data_hex.length / 2);
+  for (let index = 0; index < bytes.length; index += 1) {
+    bytes[index] = Number.parseInt(image.data_hex.slice(index * 2, index * 2 + 2), 16);
+  }
+  return new Response(bytes, {
+    headers: {
+      "Content-Type": image.content_type,
+      "Cache-Control": "private, no-store",
+      "X-Content-Type-Options": "nosniff"
+    }
+  });
 }
 
 async function deleteArticle(env, identity, id) {
