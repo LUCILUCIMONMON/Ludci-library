@@ -1,6 +1,8 @@
 (function () {
   "use strict";
 
+  document.getElementById("public-article-catalog")?.remove();
+
   const TYPES = ["Dunia", "Karakter", "Alur", "Tempat", "Catatan"];
   const STORY_CATEGORIES = ["Canon", "Alternative", "Retelling", "Sidequel", "Spin-off", "Reboot", "Restart", "What if"];
   const pageContent = document.getElementById("page-content");

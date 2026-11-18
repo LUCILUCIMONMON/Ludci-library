@@ -971,6 +971,49 @@ async function renderPublicAttribute(env, slug, requestUrl) {
   });
 }
 
+async function renderPublicArticleCatalog(env, requestUrl) {
+  const [articles, attributes] = await Promise.all([
+    env.DB.prepare(`
+      SELECT slug, title, type, summary, content, created_at, updated_at
+      FROM articles
+      WHERE visibility = 'published'
+      ORDER BY updated_at DESC, title
+    `).all(),
+    env.DB.prepare(`
+      SELECT slug, title, type, summary, content, created_at, updated_at
+      FROM attribute_entries
+      WHERE visibility = 'published'
+      ORDER BY updated_at DESC, title
+    `).all()
+  ]);
+  const origin = publicSiteOrigin(env, requestUrl);
+  const articleMarkup = articles.results.map((article) => `
+    <article class="public-catalog-article">
+      <header class="detail-header">
+        <span class="type-pill">${escapeHtml(article.type)}</span>
+        <h2><a href="${new URL(`/article/${encodeURIComponent(article.slug)}`, origin).href}">${escapeHtml(article.title)}</a></h2>
+        ${article.summary ? `<p class="detail-summary">${escapeHtml(article.summary)}</p>` : ""}
+        <time datetime="${escapeHtml(article.updated_at)}">Diperbarui ${escapeHtml(article.updated_at)}</time>
+      </header>
+      <div class="detail-content">${textContentHtml(article.content)}</div>
+    </article>`).join("");
+  const attributeMarkup = attributes.results.map((attribute) => `
+    <article class="public-catalog-article">
+      <header class="detail-header">
+        <span class="type-pill">${escapeHtml(attribute.type)}</span>
+        <h2><a href="${new URL(`/attribute/${encodeURIComponent(attribute.slug)}`, origin).href}">${escapeHtml(attribute.title)}</a></h2>
+        ${attribute.summary ? `<p class="detail-summary">${escapeHtml(attribute.summary)}</p>` : ""}
+        <time datetime="${escapeHtml(attribute.updated_at)}">Diperbarui ${escapeHtml(attribute.updated_at)}</time>
+      </header>
+      <div class="detail-content">${textContentHtml(attribute.content)}</div>
+    </article>`).join("");
+  const entries = articleMarkup + attributeMarkup;
+  return `<section class="page-content public-article-catalog">
+    <div class="page-heading"><div><div class="eyebrow">LUCIMON LIBRARY · ARTIKEL PUBLIK</div><h1>Artikel publik</h1><p>Daftar artikel dan isi lengkap untuk pembaca tanpa JavaScript.</p></div></div>
+    ${entries || '<p>Belum ada artikel publik.</p>'}
+  </section>`;
+}
+
 async function readJson(request, maxBytes = 7 * 1024 * 1024) {
   const contentLength = Number(request.headers.get("content-length") || 0);
   if (contentLength > maxBytes) throw new InputError("Ukuran permintaan terlalu besar.", 413);
@@ -1701,6 +1744,25 @@ async function route(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
   const method = request.method.toUpperCase();
+  if (path === "/" && (method === "GET" || method === "HEAD")) {
+    const asset = await env.ASSETS.fetch(new Request(url, { method: "GET", headers: request.headers }));
+    if (!asset.ok) return asset;
+    const headers = new Headers(asset.headers);
+    headers.delete("Content-Length");
+    headers.delete("Content-Encoding");
+    headers.delete("ETag");
+    headers.set("Content-Type", "text/html; charset=utf-8");
+    headers.set("Cache-Control", "no-store");
+    headers.set("X-Robots-Tag", "index, follow");
+    if (method === "HEAD") return new Response(null, { status: asset.status, headers });
+    const marker = "<!-- PUBLIC_ARTICLE_CATALOG -->";
+    const html = await asset.text();
+    if (!html.includes(marker)) throw new Error("Public article catalog insertion point is missing.");
+    return new Response(html.replace(marker, await renderPublicArticleCatalog(env, url)), {
+      status: asset.status,
+      headers
+    });
+  }
   if (path === "/guide" && (method === "GET" || method === "HEAD")) {
     const guideResponse = await env.ASSETS.fetch(new Request(new URL("/guide-content.html", url), {
       headers: request.headers
