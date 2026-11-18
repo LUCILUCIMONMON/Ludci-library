@@ -75,6 +75,14 @@ function normalizeBaseUrl(value) {
   return value.endsWith("/") ? value : `${value}/`;
 }
 
+function publicSiteOrigin(env, requestUrl) {
+  const origin = env.PUBLIC_SITE_URL ? new URL(env.PUBLIC_SITE_URL) : new URL(requestUrl);
+  if (!["http:", "https:"].includes(origin.protocol)) {
+    throw new Error("PUBLIC_SITE_URL must use HTTP or HTTPS.");
+  }
+  return origin.origin;
+}
+
 async function getIdentity(request, env) {
   if (env.LOCAL_DEV_AUTH === "true") {
     const hostname = new URL(request.url).hostname;
@@ -475,12 +483,12 @@ async function getPublishedArticle(env, id) {
     FROM articles a
     LEFT JOIN articles p ON p.id = a.parent_id AND p.visibility = 'published'
     LEFT JOIN articles m ON m.id = a.main_story_id AND m.visibility = 'published'
-    WHERE a.id = ? AND a.visibility = 'published'
-  `).bind(id).first();
+    WHERE (a.id = ? OR a.slug = ?) AND a.visibility = 'published'
+  `).bind(id, id).first();
   if (!row) return null;
   const [links, attributes] = await Promise.all([
     env.DB.prepare(`
-      SELECT l.target_id, l.relation_label
+      SELECT l.target_id, l.relation_label, target.slug, target.title, target.type, target.summary
       FROM article_links l
       JOIN articles target ON target.id = l.target_id AND target.visibility = 'published'
       WHERE l.source_id = ?
@@ -499,6 +507,14 @@ async function getPublishedArticle(env, id) {
     parent_id: row.parent_id && row.parent_slug ? row.parent_id : "",
     main_story_id: row.main_story_id && row.main_story_slug ? row.main_story_id : "",
     relations: links.results.map((link) => ({ targetId: link.target_id, label: link.relation_label })),
+    relatedArticles: links.results.map((link) => ({
+      id: link.target_id,
+      slug: link.slug,
+      title: link.title,
+      type: link.type,
+      summary: link.summary,
+      relation: link.relation_label
+    })),
     attributes: attributes.results
   });
 }
@@ -614,13 +630,15 @@ function attributeEntryFromRow(row) {
     summary: row.summary,
     ...(row.content !== undefined ? { content: row.content } : {}),
     ...(row.visibility !== undefined ? { visibility: row.visibility } : {}),
+    ...(row.created_at !== undefined ? { createdAt: row.created_at } : {}),
+    ...(row.updated_at !== undefined ? { updatedAt: row.updated_at } : {}),
     storyCount: Number(row.story_count || 0)
   };
 }
 
 async function getPublicAttributeEntries(env) {
   const result = await env.DB.prepare(`
-    SELECT e.id, e.slug, e.title, e.type, e.summary, e.visibility,
+    SELECT e.id, e.slug, e.title, e.type, e.summary, e.visibility, e.created_at, e.updated_at,
       COUNT(DISTINCT s.id) AS story_count
     FROM attribute_entries e
     LEFT JOIN story_attribute_links l ON l.attribute_id = e.id
@@ -635,7 +653,7 @@ async function getPublicAttributeEntries(env) {
 
 async function getAdminAttributeEntries(env) {
   const result = await env.DB.prepare(`
-    SELECT e.id, e.slug, e.title, e.type, e.summary, e.content, e.visibility,
+    SELECT e.id, e.slug, e.title, e.type, e.summary, e.content, e.visibility, e.created_at, e.updated_at,
       COUNT(DISTINCT l.story_id) AS story_count
     FROM attribute_entries e
     LEFT JOIN story_attribute_links l ON l.attribute_id = e.id
@@ -648,7 +666,7 @@ async function getAdminAttributeEntries(env) {
 
 async function getPublicAttribute(env, slug) {
   const attribute = await env.DB.prepare(`
-    SELECT e.id, e.slug, e.title, e.type, e.summary, e.content, e.visibility
+    SELECT e.id, e.slug, e.title, e.type, e.summary, e.content, e.visibility, e.created_at, e.updated_at
     FROM attribute_entries e
     WHERE e.slug = ? AND e.visibility = 'published'
   `).bind(slug).first();
@@ -707,16 +725,29 @@ async function deleteAttributeEntry(env, id) {
   return Number(result.meta?.changes || 0) > 0;
 }
 
-function pageResponse(title, description, body, status = 200) {
+function pageResponse(title, description, body, status = 200, metadata = {}) {
+  const robots = metadata.robots || (status >= 400 ? "noindex, follow" : "index, follow");
+  const canonical = metadata.canonicalUrl
+    ? `<link rel="canonical" href="${escapeHtml(metadata.canonicalUrl)}">`
+    : "";
+  const structuredData = metadata.structuredData
+    ? `<script type="application/ld+json">${JSON.stringify(metadata.structuredData).replace(/</g, "\\u003c")}</script>`
+    : "";
   const html = `<!doctype html>
 <html lang="id">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="robots" content="noindex, follow">
+  <meta name="robots" content="${escapeHtml(robots)}">
   <meta name="description" content="${escapeHtml(description)}">
+  <meta property="og:type" content="${metadata.type === "article" ? "article" : "website"}">
+  <meta property="og:title" content="${escapeHtml(title)}">
+  <meta property="og:description" content="${escapeHtml(description)}">
+  ${metadata.canonicalUrl ? `<meta property="og:url" content="${escapeHtml(metadata.canonicalUrl)}">` : ""}
   <meta name="theme-color" content="#f5f8fc">
   <title>${escapeHtml(title)} · Lucimon Library</title>
+  ${canonical}
+  ${structuredData}
   <link rel="stylesheet" href="/assets/styles.css">
 </head>
 <body>
@@ -742,7 +773,7 @@ function pageResponse(title, description, body, status = 200) {
     headers: {
       "Content-Type": "text/html; charset=utf-8",
       "Cache-Control": "no-store",
-      "X-Robots-Tag": "noindex, follow",
+      "X-Robots-Tag": robots,
       "X-Content-Type-Options": "nosniff",
       "Content-Security-Policy": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; base-uri 'self'; frame-ancestors 'none'"
     }
@@ -754,7 +785,7 @@ function textContentHtml(content) {
   return safeContent || '<p class="relation-empty">Artikel ini belum memiliki isi.</p>';
 }
 
-async function renderPublicArticle(env, slug) {
+async function renderPublicArticle(env, slug, requestUrl) {
   const article = await env.DB.prepare(`
     SELECT a.*, p.slug AS parent_slug, p.title AS parent_title,
       main.slug AS main_story_slug, main.title AS main_story_title
@@ -875,7 +906,68 @@ async function renderPublicArticle(env, slug) {
       </section>
     </article>
     <a class="back-link" href="/">← Kembali ke beranda</a>`;
-  return pageResponse(article.title, article.summary || article.title, body);
+  const canonicalUrl = new URL(`/article/${encodeURIComponent(article.slug)}`, publicSiteOrigin(env, requestUrl)).href;
+  return pageResponse(article.title, article.summary || article.title, body, 200, {
+    canonicalUrl,
+    type: "article",
+    structuredData: {
+      "@context": "https://schema.org",
+      "@type": "Article",
+      headline: article.title,
+      description: article.summary || article.title,
+      datePublished: article.created_at,
+      dateModified: article.updated_at,
+      mainEntityOfPage: canonicalUrl,
+      articleSection: article.type
+    }
+  });
+}
+
+async function renderPublicAttribute(env, slug, requestUrl) {
+  const attribute = await getPublicAttribute(env, slug);
+  if (!attribute) {
+    return pageResponse("Artikel tidak ditemukan", "Artikel atribut publik tidak ditemukan.", `
+      <div class="not-found"><h1>Artikel tidak ditemukan</h1><p>Artikel ini mungkin belum diterbitkan atau sudah dihapus.</p><a class="back-link" href="/#/attributes">← Kembali ke atribut</a></div>
+    `, 404);
+  }
+  const stories = attribute.stories.length
+    ? `<div class="note-grid">${attribute.stories.map((story) => `
+        <article class="note-card"><a class="note-card-main" href="/article/${encodeURIComponent(story.slug)}">
+          <div class="card-top"><span class="type-pill type-${escapeHtml(story.type.toLowerCase())}">${escapeHtml(story.type)}</span></div>
+          <h3>${escapeHtml(story.title)}</h3><p>${escapeHtml(story.summary || "Buka cerita untuk membaca detail.")}</p>
+        </a></article>`).join("")}</div>`
+    : '<div class="empty-state"><h3>Artikel mandiri</h3><p>Belum ada cerita yang ditautkan. Artikel ini tetap dapat dibaca dan diterbitkan secara mandiri.</p></div>';
+  const body = `
+    <nav class="detail-breadcrumb" aria-label="Jejak navigasi"><a href="/">Beranda</a><span>/</span><a href="/#/attributes">Atribut</a><span>/</span><span>${escapeHtml(attribute.title)}</span></nav>
+    <article class="attribute-detail">
+      <header class="detail-header">
+        <span class="type-pill type-${escapeHtml(attribute.type.toLowerCase())}">${escapeHtml(attribute.type)}</span>
+        <h1>${escapeHtml(attribute.title)}</h1>
+        ${attribute.summary ? `<p class="detail-summary">${escapeHtml(attribute.summary)}</p>` : ""}
+        <div class="eyebrow">DIPERBARUI ${escapeHtml(new Intl.DateTimeFormat("id-ID", { day: "numeric", month: "short", year: "numeric" }).format(new Date(attribute.updatedAt)).toLocaleUpperCase("id"))}</div>
+      </header>
+      <div class="detail-content">${textContentHtml(attribute.content)}</div>
+      <section>
+        <div class="section-heading"><h2>Cerita yang ditautkan</h2><span class="result-count">${attribute.stories.length} cerita</span></div>
+        ${stories}
+      </section>
+    </article>
+    <a class="back-link" href="/#/attributes">← Kembali ke atribut</a>`;
+  const canonicalUrl = new URL(`/attribute/${encodeURIComponent(attribute.slug)}`, publicSiteOrigin(env, requestUrl)).href;
+  return pageResponse(attribute.title, attribute.summary || attribute.title, body, 200, {
+    canonicalUrl,
+    type: "article",
+    structuredData: {
+      "@context": "https://schema.org",
+      "@type": "Article",
+      headline: attribute.title,
+      description: attribute.summary || attribute.title,
+      datePublished: attribute.createdAt,
+      dateModified: attribute.updatedAt,
+      mainEntityOfPage: canonicalUrl,
+      articleSection: attribute.type
+    }
+  });
 }
 
 async function readJson(request, maxBytes = 7 * 1024 * 1024) {
@@ -1573,6 +1665,11 @@ async function handleAdmin(request, env, url, method, path) {
   const articleMatch = path.match(/^\/api\/admin\/articles\/([^/]+)$/);
   if (articleMatch) {
     const id = decodeURIComponent(articleMatch[1]);
+    if (method === "GET") {
+      const owner = await getManagedOwner(env, identity, id);
+      const article = owner ? await getArticle(env, owner, id) : null;
+      return article ? json(article) : errorResponse("Artikel tidak ditemukan.", 404);
+    }
     if (method === "PUT") {
       const article = await updateArticle(env, identity, id, await readJson(request));
       return article ? json(article) : errorResponse("Artikel tidak ditemukan.", 404);
@@ -1611,9 +1708,42 @@ async function route(request, env) {
     const response = pageResponse(
       "Panduan",
       "Panduan Lucimon Library: cerita, atribut, hubungan, playlist, publikasi, dan cadangan.",
-      await guideResponse.text()
+      await guideResponse.text(),
+      200,
+      { canonicalUrl: new URL("/guide", publicSiteOrigin(env, url)).href }
     );
     return method === "HEAD" ? new Response(null, { status: response.status, headers: response.headers }) : response;
+  }
+  if (path === "/robots.txt" && (method === "GET" || method === "HEAD")) {
+    const origin = publicSiteOrigin(env, url);
+    const body = `User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /api/admin/\nSitemap: ${new URL("/sitemap.xml", origin).href}\n`;
+    return new Response(method === "HEAD" ? null : body, {
+      headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=3600" }
+    });
+  }
+  if (path === "/sitemap.xml" && (method === "GET" || method === "HEAD")) {
+    const [articles, attributes] = await Promise.all([
+      env.DB.prepare("SELECT slug, updated_at FROM articles WHERE visibility = 'published' ORDER BY slug").all(),
+      env.DB.prepare("SELECT slug, updated_at FROM attribute_entries WHERE visibility = 'published' ORDER BY slug").all()
+    ]);
+    const origin = publicSiteOrigin(env, url);
+    const escapeXml = (value) => escapeHtml(value).replace(/&#39;/g, "&apos;");
+    const entries = [
+      { loc: new URL("/", origin).href },
+      { loc: new URL("/guide", origin).href },
+      ...articles.results.map((article) => ({
+        loc: new URL(`/article/${encodeURIComponent(article.slug)}`, origin).href,
+        lastmod: article.updated_at
+      })),
+      ...attributes.results.map((attribute) => ({
+        loc: new URL(`/attribute/${encodeURIComponent(attribute.slug)}`, origin).href,
+        lastmod: attribute.updated_at
+      }))
+    ];
+    const body = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${entries.map((entry) => `  <url><loc>${escapeXml(entry.loc)}</loc>${entry.lastmod ? `<lastmod>${escapeXml(entry.lastmod)}</lastmod>` : ""}</url>`).join("\n")}\n</urlset>`;
+    return new Response(method === "HEAD" ? null : body, {
+      headers: { "Content-Type": "application/xml; charset=utf-8", "Cache-Control": "public, max-age=3600" }
+    });
   }
   if (path.startsWith("/api/admin/") || path === "/api/admin") {
     try {
@@ -1627,8 +1757,36 @@ async function route(request, env) {
   if (path === "/api/public/articles" && method === "GET") {
     return json(await publicArticles(env, url.searchParams.get("q") || ""));
   }
+  if (path === "/api/articles" && method === "GET") {
+    const articles = await publicArticles(env, url.searchParams.get("q") || "");
+    const origin = publicSiteOrigin(env, url);
+    return json(articles.map((article) => ({
+      ...article,
+      url: new URL(`/article/${encodeURIComponent(article.slug)}`, origin).href,
+      contentUrl: new URL(`/api/articles/${encodeURIComponent(article.slug)}`, origin).href
+    })));
+  }
+  const articleApiMatch = path.match(/^\/api\/articles\/([^/]+)$/);
+  if (articleApiMatch && method === "GET") {
+    const article = await getPublishedArticle(env, decodeURIComponent(articleApiMatch[1]));
+    return article ? json(article) : errorResponse("Artikel tidak ditemukan atau belum diterbitkan.", 404);
+  }
   if (path === "/api/public/attributes" && method === "GET") {
     return json(await getPublicAttributeEntries(env));
+  }
+  if (path === "/api/attributes" && method === "GET") {
+    const attributes = await getPublicAttributeEntries(env);
+    const origin = publicSiteOrigin(env, url);
+    return json(attributes.map((attribute) => ({
+      ...attribute,
+      url: new URL(`/attribute/${encodeURIComponent(attribute.slug)}`, origin).href,
+      contentUrl: new URL(`/api/attributes/${encodeURIComponent(attribute.slug)}`, origin).href
+    })));
+  }
+  const attributeApiMatch = path.match(/^\/api\/attributes\/([^/]+)$/);
+  if (attributeApiMatch && method === "GET") {
+    const attribute = await getPublicAttribute(env, decodeURIComponent(attributeApiMatch[1]));
+    return attribute ? json(attribute) : errorResponse("Atribut tidak ditemukan.", 404);
   }
   if (path === "/api/public/attributes" && method === "POST") {
     try {
@@ -1732,8 +1890,11 @@ async function route(request, env) {
     }
   }
   if (path.startsWith("/api/")) return errorResponse("Endpoint tidak ditemukan.", 404);
+  if (path.startsWith("/attribute/") && method === "GET") {
+    return renderPublicAttribute(env, decodeURIComponent(path.slice("/attribute/".length)), url);
+  }
   if (path.startsWith("/article/") && method === "GET") {
-    return renderPublicArticle(env, decodeURIComponent(path.slice("/article/".length)));
+    return renderPublicArticle(env, decodeURIComponent(path.slice("/article/".length)), url);
   }
   if (path.startsWith("/media/") && method === "GET") {
     const key = decodeURIComponent(path.slice("/media/".length));

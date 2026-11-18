@@ -83,7 +83,7 @@
   <section id="guide-ai" class="guide-section">
     <h2>Privasi, tautan, dan pembaca AI</h2>
     <p>Saat ini pilihan akses artikel hanya <strong>Draf</strong> atau <strong>Terbit</strong>. Draf hanya untuk pengelola; tidak ada mode “privat tetapi dapat dibuka dengan tautan”. Artikel terbit dapat dibaca, diubah, atau dihapus oleh siapa pun, baik ditemukan dari daftar publik maupun melalui tautan langsung. Penghapusan tidak dapat dibatalkan dari situs; simpan cadangan sebelum menghapus. Jangan menerbitkan informasi rahasia atau pribadi.</p>
-    <p>Halaman publik meminta mesin pencari untuk tidak mengindeksnya (<code>noindex</code>), tetapi itu <strong>bukan</strong> perlindungan privasi dan tidak menghalangi orang atau AI yang memiliki tautan untuk membukanya. Untuk meminta AI seperti ChatGPT membaca artikel, berikan tautan halaman terbit yang dapat diakses publik. AI hanya dapat membaca halaman terbit yang bisa dijangkaunya; draf tidak tersedia untuk umum.</p>
+    <p>Artikel terbit memiliki halaman HTML yang dapat dibaca tanpa JavaScript, URL kanonis, dan endpoint JSON publik. Daftar tersedia di <code>/api/articles</code> dan <code>/api/attributes</code>; isi lengkap dapat diambil dari <code>/api/articles/{slug}</code> atau <code>/api/attributes/{slug}</code>. Berikan AI seperti ChatGPT tautan artikel terbit atau endpoint JSON-nya. Draf tetap tidak tersedia untuk umum; artikel terbit dapat dibaca siapa pun, jadi jangan menerbitkan informasi rahasia atau pribadi.</p>
   </section>
   <footer class="guide-footer">
     <p><strong>Ringkasnya:</strong> gunakan Relasi untuk cerita ↔ cerita, dan Atribut untuk artikel non-cerita yang dapat berdiri sendiri atau ditautkan ke banyak cerita.</p>

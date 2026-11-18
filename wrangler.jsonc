@@ -4,6 +4,9 @@
   "main": "worker/index.js",
   "compatibility_date": "2026-11-17",
   "account_id": "0fd3d23494eec3b1cb2c13ebbc099634",
+  "vars": {
+    "PUBLIC_SITE_URL": "https://ludci-library.ibraiking97windows.workers.dev"
+  },
   "assets": {
     "directory": "./src",
     "binding": "ASSETS",
@@ -11,6 +14,9 @@
     "run_worker_first": [
       "/api/*",
       "/article/*",
+      "/attribute/*",
+      "/sitemap.xml",
+      "/robots.txt",
       "/guide",
       "/admin*",
       "/media/*"

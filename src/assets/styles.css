@@ -308,3 +308,62 @@ textarea.text-field { resize: vertical; line-height: 1.65; }
   .card-admin-actions { flex-direction: column; }
   .profile-row { align-items: stretch; flex-direction: column; }
 }
+
+@media (max-width: 620px) {
+  body { font-size: 16px; }
+  .brand-copy strong { font-size: 17px; }
+  .brand-copy small { font-size: 9px; }
+  .nav-link { min-height: 40px; padding: 0 11px; font-size: 13px; }
+  .button, .hero-link { min-height: 42px; padding: 0 13px; font-size: 14px; }
+  .button-add { min-height: 40px; padding: 0 10px; font-size: 12px; }
+  .backup-menu summary { width: 40px; height: 40px; }
+  .search-box { height: 44px; }
+  .search-box input { font-size: 16px; }
+  .page-content { padding: 22px 15px 34px; }
+  .home-hero { padding: 26px 19px; }
+  .home-hero h1 { font-size: 32px; }
+  .home-hero p, .guide-intro p { font-size: 16px; line-height: 1.7; }
+  .stat-card { padding: 11px; }
+  .stat-card strong { font-size: 20px; }
+  .stat-card span:last-child { font-size: 11px; }
+  .note-card { min-height: 130px; padding: 14px; }
+  .note-card h3 { font-size: 19px; }
+  .note-card p { font-size: 14px; line-height: 1.65; }
+  .type-pill { padding: 5px 8px; font-size: 11px; }
+  .card-date, .card-meta { font-size: 11px; }
+  .card-story-labels .tag { font-size: 11px; }
+  .page-heading h1 { font-size: 29px; }
+  .page-heading p, .guide-section p, .guide-section li, .guide-footer p { font-size: 15px; }
+  .result-count { font-size: 12px; }
+  .guide-toc a { padding: 9px 10px; font-size: 13px; }
+  .guide-section h2 { font-size: 24px; }
+  .guide-section h3 { font-size: 16px; }
+  .detail-breadcrumb { gap: 7px; font-size: 13px; }
+  .detail-header h1 { font-size: 32px; }
+  .detail-summary { font-size: 16px; line-height: 1.7; }
+  .detail-content { font-size: 17px; line-height: 1.8; }
+  .detail-content h2 { font-size: 27px; }
+  .detail-content h3 { font-size: 21px; }
+  .relation-panel { padding: 15px; }
+  .relation-panel h3 { font-size: 12px; }
+  .relation-link { padding: 11px; font-size: 14px; }
+  .relation-link small, .relation-empty { font-size: 12px; }
+  .tag { font-size: 12px; }
+  .note-dialog { width: calc(100% - 16px); max-height: 94dvh; }
+  .note-dialog form { padding: 20px 15px; }
+  .dialog-header h2 { font-size: 25px; }
+  .field-label { margin-top: 15px; font-size: 14px; }
+  .text-field { min-height: 44px; padding: 10px 11px; font-size: 16px; }
+  textarea.text-field { line-height: 1.6; }
+  .story-category-options label { min-height: 40px; padding: 0 10px; font-size: 13px; }
+  .editor-style-label, .editor-style { font-size: 13px; }
+  .editor-style { min-height: 40px; }
+  .editor-tool { min-width: 40px; height: 40px; font-size: 16px; }
+  .rich-editor { min-height: 240px; padding: 14px; font-size: 17px; }
+  .related-option { min-height: 46px; padding: 8px 10px; }
+  .related-option strong { font-size: 14px; }
+  .related-option small { font-size: 12px; }
+  .field-hint, .hidden-story-toggle small { font-size: 12px; }
+  .dialog-actions .button { min-height: 44px; }
+  .footer-note { font-size: 12px; }
+}

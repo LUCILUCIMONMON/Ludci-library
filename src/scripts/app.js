@@ -494,7 +494,9 @@
     }
     pageContent.innerHTML = `<a class="back-link" href="${note.visibility === "published" ? `/article/${encodeURIComponent(note.slug)}` : "/admin"}">← Kembali ke artikel</a>`;
     try {
-      if (!profile) note = normalizeNote(await api(`/api/public/articles/${encodeURIComponent(id)}`));
+      note = normalizeNote(await api(
+        `${profile ? "/api/admin/articles" : "/api/public/articles"}/${encodeURIComponent(id)}`
+      ));
       if (!requireEditRoute || (getRoute().page === "edit" && getRoute().id === id)) {
         openEditor(note, false, !profile);
       }
