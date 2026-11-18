@@ -42,6 +42,7 @@
   let editingPlaylistId = "";
   let playlistRenderSequence = 0;
   let isPublicSubmission = false;
+  let isPublicEdit = false;
 
   async function api(url, options = {}) {
     const response = await fetch(url, {
@@ -240,6 +241,9 @@
     });
     if (parts[0] === "attribute" && parts[1]) return { page: "attribute", slug: parts[1] };
     if (parts[0] === "attributes") return { page: "attributes" };
+    if (parts[0] === "guide") return { page: "guide" };
+    if (parts[0] === "edit" && parts[1]) return { page: "edit", id: parts[1] };
+    if (parts[0] === "delete" && parts[1]) return { page: "delete", id: parts[1] };
     if (parts[0] === "all") return { page: "list", title: "Semua cerita", filter: () => true };
     if (parts[0] === "type") {
       const type = parts.slice(1).join("/");
@@ -288,6 +292,10 @@
         <div class="card-meta">${parent ? `<span>↳ ${safeText(parent.title)}</span><span class="meta-dot">·</span>` : ""}<span>${childCount} turunan</span>${note.tags.length ? `<span class="meta-dot">·</span><span>${safeText(note.tags[0])}</span>` : ""}</div>
       </a>
       ${note.imageUrl ? `<img class="note-thumbnail" src="${escapeHtml(note.imageUrl)}" alt="" loading="lazy">` : ""}
+      <div class="card-admin-actions">
+        <button class="button button-quiet" type="button" data-action="edit" data-id="${escapeHtml(note.id)}">Ubah</button>
+        <button class="button button-quiet" type="button" data-action="delete" data-id="${escapeHtml(note.id)}">Hapus</button>
+      </div>
     </div>`;
   }
 
@@ -326,9 +334,7 @@
     const main = isDraft
       ? `<button class="note-card-main attribute-card-main" type="button" data-action="edit-attribute" data-id="${escapeHtml(attribute.id)}">${content}</button>`
       : `<a class="note-card-main" href="/#/attribute/${encodeURIComponent(attribute.slug)}">${content}</a>`;
-    const editButton = admin
-      ? `<div class="card-admin-actions"><button class="button button-quiet" type="button" data-action="edit-attribute" data-id="${escapeHtml(attribute.id)}">Edit</button><button class="button button-quiet" type="button" data-action="delete-attribute" data-id="${escapeHtml(attribute.id)}">Hapus</button></div>`
-      : "";
+    const editButton = `<div class="card-admin-actions">    <button class="button button-quiet" type="button" data-action="edit-attribute" data-id="${escapeHtml(attribute.id)}">Ubah</button><button class="button button-quiet" type="button" data-action="delete-attribute" data-id="${escapeHtml(attribute.id)}">Hapus</button></div>`;
     return `<article class="note-card attribute-card">
       ${main}
       ${editButton}
@@ -345,6 +351,21 @@
         <button class="button button-primary" type="button" data-action="create-attribute">＋ Tulis atribut</button>
       </div>
       ${entries.length ? `<div class="note-grid">${entries.map(attributeCardMarkup).join("")}</div>` : `<div class="empty-state"><h3>${query ? "Belum ada yang cocok" : "Belum ada atribut terbit"}</h3><p>${query ? "Coba kata lain." : "Buat dan terbitkan artikel karakter, dunia, konsep, atau entri mandiri lainnya."}</p><button class="button button-primary" type="button" data-action="create-attribute">＋ Tulis atribut</button></div>`}`;
+  }
+
+  async function renderGuide() {
+    pageContent.innerHTML = '<div class="empty-state"><h3>Membuka panduan…</h3></div>';
+    try {
+      const response = await fetch("/guide-content.html");
+      if (!response.ok) throw new Error(`Panduan gagal dimuat (${response.status}).`);
+      const content = await response.text();
+      if (getRoute().page === "guide") pageContent.innerHTML = content;
+    } catch (error) {
+      console.error("Gagal memuat panduan:", error);
+      if (getRoute().page === "guide") {
+        pageContent.innerHTML = '<div class="empty-state server-error"><h3>Panduan belum dapat dibuka</h3><p>Muat ulang halaman atau coba lagi nanti.</p></div>';
+      }
+    }
   }
 
   function renderHome() {
@@ -411,6 +432,10 @@
             <span class="type-pill ${typeClass(attribute.type)}">${safeText(attribute.type)}</span>
             <h1>${safeText(attribute.title)}</h1>
             ${attribute.summary ? `<p class="detail-summary">${safeText(attribute.summary)}</p>` : ""}
+            <div class="detail-actions">
+              <button class="button button-quiet" type="button" data-action="edit-attribute" data-id="${escapeHtml(attribute.id)}">Ubah artikel</button>
+              <button class="button button-quiet" type="button" data-action="delete-attribute" data-id="${escapeHtml(attribute.id)}">Hapus artikel</button>
+            </div>
           </header>
           <div class="detail-content">${attribute.content || '<p class="relation-empty">Belum ada deskripsi.</p>'}</div>
           <section>
@@ -461,6 +486,24 @@
     else pageContent.innerHTML = `<div class="empty-state"><h3>Cerita ini masih draf</h3><p>Cerita draf hanya dapat dibuka dari pengelola.</p><button class="button button-primary" type="button" data-action="edit" data-id="${escapeHtml(note.id)}">Edit cerita</button></div>`;
   }
 
+  async function renderEditRoute(id, requireEditRoute = false) {
+    let note = noteById(id);
+    if (!note || (!profile && note.visibility !== "published")) {
+      pageContent.innerHTML = emptyMarkup("Artikel tidak dapat diubah", "Artikel mungkin sudah dihapus atau tidak lagi diterbitkan.");
+      return;
+    }
+    pageContent.innerHTML = `<a class="back-link" href="${note.visibility === "published" ? `/article/${encodeURIComponent(note.slug)}` : "/admin"}">← Kembali ke artikel</a>`;
+    try {
+      if (!profile) note = normalizeNote(await api(`/api/public/articles/${encodeURIComponent(id)}`));
+      if (!requireEditRoute || (getRoute().page === "edit" && getRoute().id === id)) {
+        openEditor(note, false, !profile);
+      }
+    } catch (error) {
+      console.error("Gagal memuat artikel untuk diubah:", error);
+      pageContent.innerHTML = `<div class="empty-state"><h3>Artikel tidak dapat diubah</h3><p>${safeText(error.message)}</p></div>`;
+    }
+  }
+
   function renderAdmin() {
     const result = getFilteredNotes(() => true);
     pageContent.innerHTML = `
@@ -492,7 +535,7 @@
     if (!isReady) return;
     const route = getRoute();
     document.getElementById("note-count").textContent = String(notes.length);
-    document.getElementById("topbar-context").textContent = route.page === "admin" ? "RUANG PENGELOLA" : route.page === "playlists" || route.page === "playlist" ? "PLAYLIST CERITA" : route.page === "attribute" || route.page === "attributes" ? "ARTIKEL ATRIBUT" : "PORTAL CERITA & GAGASAN";
+    document.getElementById("topbar-context").textContent = route.page === "admin" ? "RUANG PENGELOLA" : route.page === "guide" ? "PANDUAN PENGGUNA" : route.page === "playlists" || route.page === "playlist" ? "PLAYLIST CERITA" : route.page === "attribute" || route.page === "attributes" ? "ARTIKEL ATRIBUT" : "PORTAL CERITA & GAGASAN";
     document.getElementById("admin-link").textContent = profile ? "Beranda" : "Masuk";
     document.getElementById("admin-link").href = profile ? "/" : "/admin";
     document.querySelector(".backup-menu").hidden = !profile;
@@ -502,6 +545,7 @@
         (route.page === "home" && link.dataset.nav === "home")
         || (route.page === "list" && route.title === "Semua cerita" && link.dataset.nav === "all")
         || ((route.page === "attributes" || route.page === "attribute") && link.dataset.nav === "attributes")
+        || (route.page === "guide" && link.dataset.nav === "guide")
         || ((route.page === "playlists" || route.page === "playlist") && link.dataset.nav === "playlists"));
     });
     if (route.page === "admin") renderAdmin();
@@ -509,6 +553,12 @@
     else if (route.page === "note") renderNote(route.id);
     else if (route.page === "attributes") renderAttributeList();
     else if (route.page === "attribute") renderAttributeDetail(route.slug);
+    else if (route.page === "guide") renderGuide();
+    else if (route.page === "edit") renderEditRoute(route.id, true);
+    else if (route.page === "delete") {
+      pageContent.innerHTML = '<div class="empty-state"><h3>Memproses penghapusan…</h3></div>';
+      deleteNote(route.id);
+    }
     else if (route.page === "playlists") renderPlaylists();
     else if (route.page === "playlist") renderPlaylistDetail(route.slug);
     else renderList(route);
@@ -529,18 +579,22 @@
     imagePreviewWrap.hidden = false;
   }
 
-  function openEditor(note, publicSubmission = false) {
+  function openEditor(note, publicSubmission = false, publicEdit = false) {
     form.reset();
     releasePreviewUrl();
     pendingImage = null;
     removeImage = false;
     isPublicSubmission = publicSubmission;
-    adminOnlyFields.forEach((field) => { field.hidden = publicSubmission; });
-    publicPublicationNotice.hidden = !publicSubmission;
-    fieldRow.classList.toggle("public-submission", publicSubmission);
+    isPublicEdit = publicEdit;
+    adminOnlyFields.forEach((field) => { field.hidden = publicSubmission || publicEdit; });
+    publicPublicationNotice.hidden = !publicSubmission && !publicEdit;
+    document.getElementById("public-publication-message").textContent = publicEdit
+      ? "Artikel terbit ini dapat diubah siapa pun. Perubahan langsung terlihat oleh semua orang."
+      : "Cerita langsung terlihat oleh semua orang. Kiriman tanpa akun tidak mendukung unggahan gambar.";
+    fieldRow.classList.toggle("public-submission", publicSubmission || publicEdit);
     imageUrl = note ? note.imageUrl : "";
     document.getElementById("field-id").value = note ? note.id : "";
-    document.getElementById("dialog-title").textContent = publicSubmission ? "Tulis cerita publik" : note ? "Edit cerita" : "Cerita baru";
+    document.getElementById("dialog-title").textContent = publicSubmission ? "Tulis cerita publik" : publicEdit ? "Ubah cerita terbit" : note ? "Edit cerita" : "Cerita baru";
     document.getElementById("field-title").value = note ? note.title : "";
     document.getElementById("field-type").value = note ? note.type : "Catatan";
     document.getElementById("field-visibility").value = publicSubmission ? "published" : note ? note.visibility : "draft";
@@ -574,7 +628,7 @@
     });
     document.getElementById("field-hidden-story").checked = Boolean(note && note.isHiddenStory);
     renderRelatedOptions();
-    document.getElementById("save-button").textContent = publicSubmission ? "Terbitkan cerita" : "Simpan cerita";
+    document.getElementById("save-button").textContent = publicSubmission ? "Terbitkan cerita" : publicEdit ? "Simpan perubahan" : "Simpan cerita";
     dialog.showModal();
     document.getElementById("field-title").focus();
   }
@@ -592,9 +646,23 @@
     attributeForm.querySelectorAll("[data-attribute-admin-only]").forEach((field) => { field.hidden = !profile; });
     document.getElementById("save-attribute-button").textContent = profile
       ? "Simpan artikel"
-      : "Terbitkan artikel";
+      : attribute ? "Simpan perubahan" : "Terbitkan artikel";
     attributeDialog.showModal();
     document.getElementById("standalone-attribute-title").focus();
+  }
+
+  async function editAttribute(id) {
+    const attribute = attributeEntries.find((item) => item.id === id);
+    if (!attribute || (!profile && attribute.visibility !== "published")) return;
+    try {
+      const editable = profile
+        ? attribute
+        : await api(`/api/public/attributes/${encodeURIComponent(attribute.slug)}`);
+      openAttributeEditor(editable);
+    } catch (error) {
+      console.error("Gagal memuat artikel atribut untuk diubah:", error);
+      showToast(error.message);
+    }
   }
 
   async function saveAttributeFromForm(event) {
@@ -605,7 +673,7 @@
     try {
       const id = document.getElementById("attribute-field-id").value;
       const entry = await api(id
-        ? `/api/admin/attributes/${encodeURIComponent(id)}`
+        ? `${profile ? "/api/admin/attributes" : "/api/public/attributes"}/${encodeURIComponent(id)}`
         : profile ? "/api/admin/attributes" : "/api/public/attributes", {
         method: id ? "PUT" : "POST",
         body: JSON.stringify({
@@ -618,13 +686,17 @@
       });
       attributeDialog.close();
       await refreshNotes();
-      showToast(entry.visibility === "published" ? "Artikel atribut diterbitkan." : "Artikel atribut disimpan sebagai draf.");
+      showToast(id
+        ? "Artikel atribut diperbarui."
+        : entry.visibility === "published" ? "Artikel atribut diterbitkan." : "Artikel atribut disimpan sebagai draf.");
     } catch (error) {
       console.error("Gagal menyimpan artikel atribut:", error);
       showToast(error.message);
     } finally {
       saveButton.disabled = false;
-      saveButton.textContent = profile ? "Simpan artikel" : "Terbitkan artikel";
+      saveButton.textContent = profile
+        ? "Simpan artikel"
+        : document.getElementById("attribute-field-id").value ? "Simpan perubahan" : "Terbitkan artikel";
     }
   }
 
@@ -633,16 +705,17 @@
     if (!attribute) return;
     const storyCount = Number(attribute.storyCount) || 0;
     const confirmation = storyCount
-      ? `Hapus atribut “${attribute.title}”? Atribut ini akan dilepas dari ${storyCount} cerita. Ceritanya tidak ikut dihapus.`
-      : `Hapus atribut “${attribute.title}”?`;
+      ? `Hapus artikel atribut “${attribute.title}” secara permanen? Artikel ini akan dilepas dari ${storyCount} cerita. Ceritanya tidak ikut dihapus.`
+      : `Hapus artikel atribut “${attribute.title}” secara permanen?`;
     if (!window.confirm(confirmation)) return;
     try {
-      await api(`/api/admin/attributes/${encodeURIComponent(id)}`, { method: "DELETE" });
+      await api(`${profile ? "/api/admin/attributes" : "/api/public/attributes"}/${encodeURIComponent(id)}`, { method: "DELETE" });
       attributeEntries = attributeEntries.filter((item) => item.id !== id);
       notes = notes.map((note) => ({
         ...note,
         attributes: note.attributes.filter((item) => item.id !== id)
       }));
+      if (getRoute().page === "attribute") location.hash = "#/attributes";
       render();
       showToast("Artikel atribut dihapus.");
     } catch (error) {
@@ -810,12 +883,18 @@
         note.imageUrl = "";
       }
       const endpoint = oldId
-        ? `/api/admin/articles/${encodeURIComponent(oldId)}`
+        ? `${isPublicEdit ? "/api/public/articles" : "/api/admin/articles"}/${encodeURIComponent(oldId)}`
         : profile ? "/api/admin/articles" : "/api/public/articles";
       const stored = await api(endpoint, {
         method: oldId ? "PUT" : "POST",
         body: JSON.stringify(note)
       });
+      if (isPublicEdit) {
+        notes = notes.map((item) => item.id === oldId ? { ...item, ...stored } : item);
+        dialog.close();
+        window.location.assign(`/article/${encodeURIComponent(stored.slug)}`);
+        return;
+      }
       const previousImageKey = oldNote ? oldNote.imageKey : "";
       const savedAttributeIds = new Set((stored.attributes || []).map((attribute) => attribute.id));
       const previousAttributeIds = new Set((oldNote?.attributes || []).map((attribute) => attribute.id));
@@ -853,15 +932,23 @@
       showToast(error.message);
     } finally {
       saveButton.disabled = false;
-      saveButton.textContent = isPublicSubmission ? "Terbitkan cerita" : "Simpan cerita";
+      saveButton.textContent = isPublicSubmission ? "Terbitkan cerita" : isPublicEdit ? "Simpan perubahan" : "Simpan cerita";
     }
   }
 
   async function deleteNote(id) {
     const note = noteById(id);
-    if (!note || !window.confirm(`Hapus cerita “${note.title}”? Cerita turunannya akan menjadi cerita utama.`)) return;
+    if (!note) return;
+    if (!window.confirm(`Hapus artikel “${note.title}” secara permanen? Cerita turunannya akan menjadi cerita utama.`)) {
+      if (getRoute().page === "delete") window.location.assign(`/article/${encodeURIComponent(note.slug)}`);
+      return;
+    }
     try {
-      await api(`/api/admin/articles/${encodeURIComponent(id)}`, { method: "DELETE" });
+      await api(`${profile ? "/api/admin/articles" : "/api/public/articles"}/${encodeURIComponent(id)}`, { method: "DELETE" });
+      if (!profile && getRoute().page === "delete") {
+        window.location.assign("/");
+        return;
+      }
       await refreshNotes();
       render();
       showToast("Cerita dihapus.");
@@ -946,13 +1033,18 @@
       openEditor(null, !profile);
     }
     if (target.dataset.action === "create-attribute") openAttributeEditor();
-    if (target.dataset.action === "edit-attribute" && profile) {
-      const attribute = attributeEntries.find((item) => item.id === target.dataset.id);
-      if (attribute) openAttributeEditor(attribute);
+    if (target.dataset.action === "edit-attribute") {
+      editAttribute(target.dataset.id);
     }
-    if (target.dataset.action === "delete-attribute" && profile) deleteAttribute(target.dataset.id);
-    if (target.dataset.action === "edit" && profile) openEditor(noteById(target.dataset.id));
-    if (target.dataset.action === "delete" && profile) deleteNote(target.dataset.id);
+    if (target.dataset.action === "delete-attribute") deleteAttribute(target.dataset.id);
+    if (target.dataset.action === "edit") {
+      const note = noteById(target.dataset.id);
+      if (note && (profile || note.visibility === "published")) {
+        if (profile) openEditor(note);
+        else renderEditRoute(note.id);
+      }
+    }
+    if (target.dataset.action === "delete") deleteNote(target.dataset.id);
     if (target.dataset.action === "create-playlist") openPlaylistEditor();
     if (target.dataset.action === "edit-playlist") editPlaylist(target.dataset.id);
     if (target.dataset.action === "playlist-remove") {
@@ -1112,7 +1204,7 @@
   searchInput.addEventListener("input", () => {
     const route = getRoute();
     if (route.page === "note") location.hash = "#/all";
-    else if (route.page === "attributes") render();
+    else if (route.page === "attributes" || route.page === "guide") render();
     else if (profile) render();
     else {
       const requestId = ++searchSequence;

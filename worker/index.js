@@ -467,6 +467,42 @@ async function getArticle(env, identity, id) {
   }, true);
 }
 
+async function getPublishedArticle(env, id) {
+  const row = await env.DB.prepare(`
+    SELECT a.*,
+      p.slug AS parent_slug, p.title AS parent_title,
+      m.slug AS main_story_slug, m.title AS main_story_title
+    FROM articles a
+    LEFT JOIN articles p ON p.id = a.parent_id AND p.visibility = 'published'
+    LEFT JOIN articles m ON m.id = a.main_story_id AND m.visibility = 'published'
+    WHERE a.id = ? AND a.visibility = 'published'
+  `).bind(id).first();
+  if (!row) return null;
+  const [links, attributes] = await Promise.all([
+    env.DB.prepare(`
+      SELECT l.target_id, l.relation_label
+      FROM article_links l
+      JOIN articles target ON target.id = l.target_id AND target.visibility = 'published'
+      WHERE l.source_id = ?
+      ORDER BY target.title
+    `).bind(id).all(),
+    env.DB.prepare(`
+      SELECT e.id, e.slug, e.title, e.type, e.summary
+      FROM story_attribute_links l
+      JOIN attribute_entries e ON e.id = l.attribute_id AND e.visibility = 'published'
+      WHERE l.story_id = ?
+      ORDER BY e.type, e.title
+    `).bind(id).all()
+  ]);
+  return articleFromRow({
+    ...row,
+    parent_id: row.parent_id && row.parent_slug ? row.parent_id : "",
+    main_story_id: row.main_story_id && row.main_story_slug ? row.main_story_id : "",
+    relations: links.results.map((link) => ({ targetId: link.target_id, label: link.relation_label })),
+    attributes: attributes.results
+  });
+}
+
 async function getAdminArticles(env, identity) {
   const result = await env.DB.prepare(`
     SELECT a.*, p.slug AS parent_slug, p.title AS parent_title,
@@ -516,7 +552,7 @@ async function publicArticles(env, query) {
   const needle = query.trim().slice(0, 100);
   const pattern = `%${needle.replace(/[\\%_]/g, "\\$&")}%`;
   const rows = await env.DB.prepare(`
-    SELECT a.id, a.slug, a.title, a.type, a.summary, a.story_categories_json,
+    SELECT a.id, a.slug, a.title, a.type, a.summary, a.visibility, a.story_categories_json,
       a.is_hidden_story,
       CASE WHEN main.id IS NOT NULL THEN a.main_story_id ELSE NULL END AS main_story_id,
       main.slug AS main_story_slug, main.title AS main_story_title,
@@ -693,6 +729,7 @@ function pageResponse(title, description, body, status = 200) {
       <nav class="primary-nav" aria-label="Navigasi utama">
         <a class="nav-link" href="/">Beranda</a>
         <a class="nav-link" href="/#/all">Semua artikel</a>
+        <a class="nav-link" href="/guide">Panduan</a>
       </nav>
       <div class="header-tools"><a class="button button-primary button-add" href="/admin">Masuk pengelola</a></div>
     </div>
@@ -817,6 +854,10 @@ async function renderPublicArticle(env, slug) {
         <h1>${escapeHtml(article.title)}</h1>
         ${article.summary ? `<p class="detail-summary">${escapeHtml(article.summary)}</p>` : ""}
         <div class="eyebrow">DIPERBARUI ${escapeHtml(new Intl.DateTimeFormat("id-ID", { day: "numeric", month: "short", year: "numeric" }).format(new Date(article.updated_at)).toLocaleUpperCase("id"))}</div>
+        <div class="detail-actions">
+          <a class="button button-quiet" href="/#/edit/${encodeURIComponent(article.id)}">Ubah artikel</a>
+          <a class="button button-quiet" href="/#/delete/${encodeURIComponent(article.id)}">Hapus artikel</a>
+        </div>
       </header>
       <div class="detail-content">${textContentHtml(article.content)}</div>
       ${tags.length ? `<div class="detail-tags">${tags.map((tag) => `<span class="tag"># ${escapeHtml(tag)}</span>`).join("")}</div>` : ""}
@@ -961,6 +1002,73 @@ async function createPublicArticle(env, request, body) {
   };
   await ensureProfile(env, identity);
   return createArticle(env, identity, input);
+}
+
+async function updatePublishedArticle(env, request, id, body) {
+  const existing = await env.DB.prepare(
+    "SELECT id, main_story_id FROM articles WHERE id = ? AND visibility = 'published'"
+  ).bind(id).first();
+  if (!existing) return null;
+  const identity = {
+    id: PUBLIC_AUTHOR_ID,
+    email: "public-contributor@lucimon.invalid",
+    name: "Kontributor publik"
+  };
+  const input = validateArticleInput({
+    ...body,
+    title: body.title,
+    type: body.type,
+    summary: body.summary,
+    content: body.content,
+    visibility: "published",
+    parentId: "",
+    imageKey: ""
+  });
+  const relations = await validateRelations(env, identity, id, "", input.relations, input.mainStoryId);
+  const attributes = await resolveAttributeEntries(env, identity, input.attributes);
+  let mainStoryId = input.mainStoryId || null;
+  if (!mainStoryId && existing.main_story_id) {
+    const currentMainStory = await env.DB.prepare(
+      "SELECT visibility FROM articles WHERE id = ?"
+    ).bind(existing.main_story_id).first();
+    if (currentMainStory?.visibility !== "published") mainStoryId = existing.main_story_id;
+  }
+  await limitPublicSubmission(env, request);
+  const now = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare(`
+      UPDATE articles
+      SET title = ?, type = ?, summary = ?, content = ?, tags_json = ?,
+        story_categories_json = ?, is_hidden_story = ?, main_story_id = ?, updated_at = ?
+      WHERE id = ? AND visibility = 'published'
+    `).bind(
+      input.title, input.type, input.summary, input.content, JSON.stringify(input.tags),
+      JSON.stringify(input.storyCategories), input.isHiddenStory ? 1 : 0,
+      mainStoryId, now, id
+    ),
+    env.DB.prepare(`
+      DELETE FROM article_links
+      WHERE source_id = ?
+      AND target_id IN (SELECT id FROM articles WHERE visibility = 'published')
+    `).bind(id),
+    ...relations.map(({ targetId, label }) => env.DB.prepare(
+      "INSERT INTO article_links (source_id, target_id, relation_label, created_at) VALUES (?, ?, ?, ?)"
+    ).bind(id, targetId, label, now)),
+    env.DB.prepare(`
+      DELETE FROM story_attribute_links
+      WHERE story_id = ?
+        AND attribute_id IN (SELECT id FROM attribute_entries WHERE visibility = 'published')
+    `).bind(id),
+    ...attributes.filter((attribute) => attribute.isNew).map((attribute) => env.DB.prepare(`
+      INSERT INTO attribute_entries (id, slug, title, type, summary, content, visibility, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'published', ?, ?)
+    `).bind(attribute.id, attribute.slug, attribute.title, attribute.type, attribute.summary, attribute.content, now, now)),
+    ...attributes.map((attribute) => env.DB.prepare(`
+      INSERT INTO story_attribute_links (story_id, attribute_id, created_at)
+      VALUES (?, ?, ?)
+    `).bind(id, attribute.id, now))
+  ]);
+  return getPublishedArticle(env, id);
 }
 
 function validatePlaylistInput(body) {
@@ -1196,6 +1304,31 @@ async function deleteArticle(env, identity, id) {
     const usage = await env.DB.prepare("SELECT COUNT(*) AS count FROM articles WHERE image_key = ?")
       .bind(article.image_key).first();
     if (Number(usage?.count) === 0) await deleteImage(env, identity, article.image_key);
+  }
+  return true;
+}
+
+async function deletePublishedArticle(env, request, id) {
+  const article = await env.DB.prepare(`
+    SELECT id, owner_id, parent_id, image_key
+    FROM articles
+    WHERE id = ? AND visibility = 'published'
+  `).bind(id).first();
+  if (!article) return false;
+  await limitPublicSubmission(env, request);
+  const now = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare("UPDATE articles SET parent_id = ?, updated_at = ? WHERE parent_id = ?")
+      .bind(article.parent_id, now, id),
+    env.DB.prepare("UPDATE articles SET main_story_id = NULL WHERE main_story_id = ?").bind(id),
+    env.DB.prepare("DELETE FROM articles WHERE id = ? AND visibility = 'published'").bind(id)
+  ]);
+  if (article.image_key) {
+    await env.DB.prepare(`
+      DELETE FROM image_assets
+      WHERE key = ? AND owner_id = ?
+        AND NOT EXISTS (SELECT 1 FROM articles WHERE image_key = ?)
+    `).bind(article.image_key, article.owner_id, article.image_key).run();
   }
   return true;
 }
@@ -1470,6 +1603,18 @@ async function route(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
   const method = request.method.toUpperCase();
+  if (path === "/guide" && (method === "GET" || method === "HEAD")) {
+    const guideResponse = await env.ASSETS.fetch(new Request(new URL("/guide-content.html", url), {
+      headers: request.headers
+    }));
+    if (!guideResponse.ok) throw new Error(`Panduan gagal dimuat (${guideResponse.status}).`);
+    const response = pageResponse(
+      "Panduan",
+      "Panduan Lucimon Library: cerita, atribut, hubungan, playlist, publikasi, dan cadangan.",
+      await guideResponse.text()
+    );
+    return method === "HEAD" ? new Response(null, { status: response.status, headers: response.headers }) : response;
+  }
   if (path.startsWith("/api/admin/") || path === "/api/admin") {
     try {
       return await handleAdmin(request, env, url, method, path);
@@ -1498,9 +1643,57 @@ async function route(request, env) {
     }
   }
   const publicAttributeMatch = path.match(/^\/api\/public\/attributes\/([^/]+)$/);
-  if (publicAttributeMatch && method === "GET") {
-    const attribute = await getPublicAttribute(env, decodeURIComponent(publicAttributeMatch[1]));
-    return attribute ? json(attribute) : errorResponse("Atribut tidak ditemukan.", 404);
+  if (publicAttributeMatch) {
+    const key = decodeURIComponent(publicAttributeMatch[1]);
+    if (method === "GET") {
+      const attribute = await getPublicAttribute(env, key);
+      return attribute ? json(attribute) : errorResponse("Atribut tidak ditemukan.", 404);
+    }
+    if (method === "PUT" || method === "DELETE") {
+      try {
+        const existing = await env.DB.prepare(
+          "SELECT id, slug FROM attribute_entries WHERE id = ? AND visibility = 'published'"
+        ).bind(key).first();
+        if (!existing) return errorResponse("Artikel atribut tidak ditemukan.", 404);
+        if (method === "DELETE") {
+          await limitPublicSubmission(env, request);
+          return (await deleteAttributeEntry(env, existing.id))
+            ? new Response(null, { status: 204 })
+            : errorResponse("Artikel atribut tidak ditemukan.", 404);
+        }
+        const input = validateAttributeInput(await readJson(request), "published");
+        await limitPublicSubmission(env, request);
+        if (!await updateAttributeEntry(env, existing.id, input)) {
+          return errorResponse("Artikel atribut tidak ditemukan.", 404);
+        }
+        return json(await getPublicAttribute(env, existing.slug));
+      } catch (error) {
+        if (error instanceof InputError) return errorResponse(error.message, error.status);
+        throw error;
+      }
+    }
+  }
+  const publicArticleMatch = path.match(/^\/api\/public\/articles\/([^/]+)$/);
+  if (publicArticleMatch) {
+    const id = decodeURIComponent(publicArticleMatch[1]);
+    if (method === "GET") {
+      const article = await getPublishedArticle(env, id);
+      return article ? json(article) : errorResponse("Artikel tidak ditemukan atau belum diterbitkan.", 404);
+    }
+    try {
+      if (method === "PUT") {
+        const article = await updatePublishedArticle(env, request, id, await readJson(request, 1024 * 1024));
+        return article ? json(article) : errorResponse("Artikel tidak ditemukan atau belum diterbitkan.", 404);
+      }
+      if (method === "DELETE") {
+        return (await deletePublishedArticle(env, request, id))
+          ? new Response(null, { status: 204 })
+          : errorResponse("Artikel tidak ditemukan atau belum diterbitkan.", 404);
+      }
+    } catch (error) {
+      if (error instanceof InputError) return errorResponse(error.message, error.status);
+      throw error;
+    }
   }
   if (path === "/api/public/articles" && method === "POST") {
     try {
