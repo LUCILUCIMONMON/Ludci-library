@@ -221,6 +221,7 @@ function articleFromRow(row, admin = false) {
     relatedIds: row.relations
       ? row.relations.map((relation) => relation.targetId)
       : row.relatedIds || [],
+    relatedArticles: row.relatedArticles || [],
     attributes: row.attributes || [],
     tags,
     imageKey: admin ? row.image_key || "" : undefined,
@@ -493,14 +494,14 @@ async function getPublishedArticle(env, id) {
       JOIN articles target ON target.id = l.target_id AND target.visibility = 'published'
       WHERE l.source_id = ?
       ORDER BY target.title
-    `).bind(id).all(),
+    `).bind(row.id).all(),
     env.DB.prepare(`
       SELECT e.id, e.slug, e.title, e.type, e.summary
       FROM story_attribute_links l
       JOIN attribute_entries e ON e.id = l.attribute_id AND e.visibility = 'published'
       WHERE l.story_id = ?
       ORDER BY e.type, e.title
-    `).bind(id).all()
+    `).bind(row.id).all()
   ]);
   return articleFromRow({
     ...row,
