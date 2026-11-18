@@ -6,8 +6,6 @@ const STORY_CATEGORIES = new Set([
   "Canon", "Alternative", "Retelling", "Sidequel", "Spin-off", "Reboot", "Restart", "What if"
 ]);
 const PUBLIC_AUTHOR_ID = "public-contributor";
-const PUBLIC_SUBMISSION_LIMIT = 5;
-const PUBLIC_SUBMISSION_WINDOW_SECONDS = 60 * 60;
 const IMAGE_TYPES = new Map([
   ["image/jpeg", "jpg"],
   ["image/png", "png"],
@@ -583,7 +581,6 @@ async function publicArticles(env, query) {
       AND (? = '' OR a.title LIKE ? ESCAPE '\\' OR a.summary LIKE ? ESCAPE '\\'
         OR a.content LIKE ? ESCAPE '\\' OR a.tags_json LIKE ? ESCAPE '\\')
     ORDER BY a.updated_at DESC
-    LIMIT 500
   `).bind(needle, pattern, pattern, pattern, pattern).all();
   if (!rows.results.length) return [];
   const ids = rows.results.map((row) => row.id);
@@ -647,7 +644,6 @@ async function getPublicAttributeEntries(env) {
     WHERE e.visibility = 'published'
     GROUP BY e.id
     ORDER BY e.type, e.title
-    LIMIT 500
   `).all();
   return result.results.map(attributeEntryFromRow);
 }
@@ -866,7 +862,7 @@ async function renderPublicArticle(env, slug, requestUrl) {
     : '<div class="relation-empty">Belum ada cerita yang memilih ini sebagai cerita utama.</div>';
   const attributes = attributesResult.results.length
     ? attributesResult.results.map((attribute) => {
-      const href = `/#/attribute/${encodeURIComponent(attribute.slug)}`;
+      const href = `/attribute/${encodeURIComponent(attribute.slug)}`;
       return `<a class="relation-link" href="${escapeHtml(href)}"><span>${escapeHtml(attribute.title)}</span><small>${escapeHtml(attribute.type)} · Buka atribut →</small></a>`;
     }).join("")
     : '<div class="relation-empty">Belum ada entri atribut.</div>';
@@ -928,7 +924,7 @@ async function renderPublicAttribute(env, slug, requestUrl) {
   const attribute = await getPublicAttribute(env, slug);
   if (!attribute) {
     return pageResponse("Artikel tidak ditemukan", "Artikel atribut publik tidak ditemukan.", `
-      <div class="not-found"><h1>Artikel tidak ditemukan</h1><p>Artikel ini mungkin belum diterbitkan atau sudah dihapus.</p><a class="back-link" href="/#/attributes">← Kembali ke atribut</a></div>
+      <div class="not-found"><h1>Artikel tidak ditemukan</h1><p>Artikel ini mungkin belum diterbitkan atau sudah dihapus.</p><a class="back-link" href="/">← Kembali ke beranda</a></div>
     `, 404);
   }
   const stories = attribute.stories.length
@@ -939,7 +935,7 @@ async function renderPublicAttribute(env, slug, requestUrl) {
         </a></article>`).join("")}</div>`
     : '<div class="empty-state"><h3>Artikel mandiri</h3><p>Belum ada cerita yang ditautkan. Artikel ini tetap dapat dibaca dan diterbitkan secara mandiri.</p></div>';
   const body = `
-    <nav class="detail-breadcrumb" aria-label="Jejak navigasi"><a href="/">Beranda</a><span>/</span><a href="/#/attributes">Atribut</a><span>/</span><span>${escapeHtml(attribute.title)}</span></nav>
+    <nav class="detail-breadcrumb" aria-label="Jejak navigasi"><a href="/">Beranda</a><span>/</span><span>Atribut</span><span>/</span><span>${escapeHtml(attribute.title)}</span></nav>
     <article class="attribute-detail">
       <header class="detail-header">
         <span class="type-pill type-${escapeHtml(attribute.type.toLowerCase())}">${escapeHtml(attribute.type)}</span>
@@ -953,7 +949,7 @@ async function renderPublicAttribute(env, slug, requestUrl) {
         ${stories}
       </section>
     </article>
-    <a class="back-link" href="/#/attributes">← Kembali ke atribut</a>`;
+    <a class="back-link" href="/">← Kembali ke beranda</a>`;
   const canonicalUrl = new URL(`/attribute/${encodeURIComponent(attribute.slug)}`, publicSiteOrigin(env, requestUrl)).href;
   return pageResponse(attribute.title, attribute.summary || attribute.title, body, 200, {
     canonicalUrl,
@@ -974,44 +970,41 @@ async function renderPublicAttribute(env, slug, requestUrl) {
 async function renderPublicArticleCatalog(env, requestUrl) {
   const [articles, attributes] = await Promise.all([
     env.DB.prepare(`
-      SELECT slug, title, type, summary, content, created_at, updated_at
+      SELECT slug, title, type, summary, updated_at
       FROM articles
       WHERE visibility = 'published'
       ORDER BY updated_at DESC, title
     `).all(),
     env.DB.prepare(`
-      SELECT slug, title, type, summary, content, created_at, updated_at
+      SELECT slug, title, type, summary, updated_at
       FROM attribute_entries
       WHERE visibility = 'published'
       ORDER BY updated_at DESC, title
     `).all()
   ]);
   const origin = publicSiteOrigin(env, requestUrl);
-  const articleMarkup = articles.results.map((article) => `
-    <article class="public-catalog-article">
-      <header class="detail-header">
-        <span class="type-pill">${escapeHtml(article.type)}</span>
-        <h2><a href="${new URL(`/article/${encodeURIComponent(article.slug)}`, origin).href}">${escapeHtml(article.title)}</a></h2>
-        ${article.summary ? `<p class="detail-summary">${escapeHtml(article.summary)}</p>` : ""}
-        <time datetime="${escapeHtml(article.updated_at)}">Diperbarui ${escapeHtml(article.updated_at)}</time>
-      </header>
-      <div class="detail-content">${textContentHtml(article.content)}</div>
-    </article>`).join("");
-  const attributeMarkup = attributes.results.map((attribute) => `
-    <article class="public-catalog-article">
-      <header class="detail-header">
-        <span class="type-pill">${escapeHtml(attribute.type)}</span>
-        <h2><a href="${new URL(`/attribute/${encodeURIComponent(attribute.slug)}`, origin).href}">${escapeHtml(attribute.title)}</a></h2>
-        ${attribute.summary ? `<p class="detail-summary">${escapeHtml(attribute.summary)}</p>` : ""}
-        <time datetime="${escapeHtml(attribute.updated_at)}">Diperbarui ${escapeHtml(attribute.updated_at)}</time>
-      </header>
-      <div class="detail-content">${textContentHtml(attribute.content)}</div>
-    </article>`).join("");
-  const entries = articleMarkup + attributeMarkup;
-  return `<section class="page-content public-article-catalog">
-    <div class="page-heading"><div><div class="eyebrow">LUCIMON LIBRARY · ARTIKEL PUBLIK</div><h1>Artikel publik</h1><p>Daftar artikel dan isi lengkap untuk pembaca tanpa JavaScript.</p></div></div>
-    ${entries || '<p>Belum ada artikel publik.</p>'}
-  </section>`;
+  const entryList = (entries, route) => entries.length
+    ? `<ul class="public-catalog-list">${entries.map((entry) => `
+        <li>
+          <a href="${new URL(`/${route}/${encodeURIComponent(entry.slug)}`, origin).href}">
+            <span class="type-pill">${escapeHtml(entry.type)}</span>
+            <strong>${escapeHtml(entry.title)}</strong>
+            ${entry.summary ? `<span>${escapeHtml(entry.summary)}</span>` : ""}
+          </a>
+          <time datetime="${escapeHtml(entry.updated_at)}">Diperbarui ${escapeHtml(entry.updated_at)}</time>
+        </li>`).join("")}</ul>`
+    : '<p class="relation-empty">Belum ada artikel publik.</p>';
+  return `<div class="page-heading">
+      <div><div class="eyebrow">LUCIMON LIBRARY · ARTIKEL PUBLIK</div><h1>Jelajahi semua artikel</h1><p>Daftar cerita dan atribut terbit, dapat dibuka tanpa JavaScript maupun login.</p></div>
+    </div>
+    <section aria-labelledby="public-stories-heading">
+      <div class="section-heading"><h2 id="public-stories-heading">Cerita</h2><span class="result-count">${articles.results.length} artikel</span></div>
+      ${entryList(articles.results, "article")}
+    </section>
+    <section aria-labelledby="public-attributes-heading">
+      <div class="section-heading"><h2 id="public-attributes-heading">Atribut</h2><span class="result-count">${attributes.results.length} artikel</span></div>
+      ${entryList(attributes.results, "attribute")}
+    </section>`;
 }
 
 async function readJson(request, maxBytes = 7 * 1024 * 1024) {
@@ -1089,48 +1082,13 @@ async function createArticle(env, identity, body) {
   return getArticle(env, identity, id);
 }
 
-async function limitPublicSubmission(env, request) {
-  const clientIp = request.headers.get("cf-connecting-ip") || "unknown";
-  const now = Math.floor(Date.now() / 1000);
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(clientIp)
-  );
-  const clientKey = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-  const windowStart = now - PUBLIC_SUBMISSION_WINDOW_SECONDS;
-  const result = await env.DB.prepare(`
-    INSERT INTO public_submission_limits (client_key, window_start, request_count)
-    VALUES (?, ?, 1)
-    ON CONFLICT(client_key) DO UPDATE SET
-      request_count = CASE
-        WHEN public_submission_limits.window_start <= ? THEN 1
-        ELSE public_submission_limits.request_count + 1
-      END,
-      window_start = CASE
-        WHEN public_submission_limits.window_start <= ? THEN excluded.window_start
-        ELSE public_submission_limits.window_start
-      END
-    RETURNING request_count
-  `).bind(clientKey, now, windowStart, windowStart).first();
-  if (!result) throw new Error("Public submission rate limit could not be recorded.");
-  const requestCount = Number(result.request_count);
-  if (requestCount === 1) {
-    await env.DB.prepare("DELETE FROM public_submission_limits WHERE window_start < ?")
-      .bind(now - 2 * 86400).run();
-  }
-  if (requestCount > PUBLIC_SUBMISSION_LIMIT) {
-    throw new InputError("Batas kirim artikel tercapai. Coba lagi satu jam lagi.", 429);
-  }
-}
-
-async function createPublicArticle(env, request, body) {
+async function createPublicArticle(env, body) {
   const input = validateArticleInput({
     ...body,
     visibility: "published",
     parentId: "",
     imageKey: ""
   });
-  await limitPublicSubmission(env, request);
   const identity = {
     id: PUBLIC_AUTHOR_ID,
     email: "public-contributor@lucimon.invalid",
@@ -1140,7 +1098,7 @@ async function createPublicArticle(env, request, body) {
   return createArticle(env, identity, input);
 }
 
-async function updatePublishedArticle(env, request, id, body) {
+async function updatePublishedArticle(env, id, body) {
   const existing = await env.DB.prepare(
     "SELECT id, main_story_id FROM articles WHERE id = ? AND visibility = 'published'"
   ).bind(id).first();
@@ -1169,7 +1127,6 @@ async function updatePublishedArticle(env, request, id, body) {
     ).bind(existing.main_story_id).first();
     if (currentMainStory?.visibility !== "published") mainStoryId = existing.main_story_id;
   }
-  await limitPublicSubmission(env, request);
   const now = new Date().toISOString();
   await env.DB.batch([
     env.DB.prepare(`
@@ -1279,9 +1236,8 @@ async function getPublicPlaylist(env, slug) {
   };
 }
 
-async function createPublicPlaylist(env, request, body) {
+async function createPublicPlaylist(env, body) {
   const input = validatePlaylistInput(body);
-  await limitPublicSubmission(env, request);
   await validatePublishedStories(env, input.articleIds);
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
@@ -1299,11 +1255,10 @@ async function createPublicPlaylist(env, request, body) {
   return getPublicPlaylist(env, slug);
 }
 
-async function updatePublicPlaylist(env, request, id, body) {
+async function updatePublicPlaylist(env, id, body) {
   const exists = await env.DB.prepare("SELECT id FROM playlists WHERE id = ?").bind(id).first();
   if (!exists) return null;
   const input = validatePlaylistInput(body);
-  await limitPublicSubmission(env, request);
   await validatePublishedStories(env, input.articleIds);
   const now = new Date().toISOString();
   await env.DB.batch([
@@ -1444,14 +1399,13 @@ async function deleteArticle(env, identity, id) {
   return true;
 }
 
-async function deletePublishedArticle(env, request, id) {
+async function deletePublishedArticle(env, id) {
   const article = await env.DB.prepare(`
     SELECT id, owner_id, parent_id, image_key
     FROM articles
     WHERE id = ? AND visibility = 'published'
   `).bind(id).first();
   if (!article) return false;
-  await limitPublicSubmission(env, request);
   const now = new Date().toISOString();
   await env.DB.batch([
     env.DB.prepare("UPDATE articles SET parent_id = ?, updated_at = ? WHERE parent_id = ?")
@@ -1854,7 +1808,6 @@ async function route(request, env) {
   if (path === "/api/public/attributes" && method === "POST") {
     try {
       const input = validateAttributeInput(await readJson(request), "published");
-      await limitPublicSubmission(env, request);
       const id = await createAttributeEntry(env, input);
       const entry = await env.DB.prepare("SELECT * FROM attribute_entries WHERE id = ?").bind(id).first();
       return json(attributeEntryFromRow(entry), 201);
@@ -1877,13 +1830,11 @@ async function route(request, env) {
         ).bind(key).first();
         if (!existing) return errorResponse("Artikel atribut tidak ditemukan.", 404);
         if (method === "DELETE") {
-          await limitPublicSubmission(env, request);
           return (await deleteAttributeEntry(env, existing.id))
             ? new Response(null, { status: 204 })
             : errorResponse("Artikel atribut tidak ditemukan.", 404);
         }
         const input = validateAttributeInput(await readJson(request), "published");
-        await limitPublicSubmission(env, request);
         if (!await updateAttributeEntry(env, existing.id, input)) {
           return errorResponse("Artikel atribut tidak ditemukan.", 404);
         }
@@ -1903,11 +1854,11 @@ async function route(request, env) {
     }
     try {
       if (method === "PUT") {
-        const article = await updatePublishedArticle(env, request, id, await readJson(request, 1024 * 1024));
+        const article = await updatePublishedArticle(env, id, await readJson(request, 1024 * 1024));
         return article ? json(article) : errorResponse("Artikel tidak ditemukan atau belum diterbitkan.", 404);
       }
       if (method === "DELETE") {
-        return (await deletePublishedArticle(env, request, id))
+        return (await deletePublishedArticle(env, id))
           ? new Response(null, { status: 204 })
           : errorResponse("Artikel tidak ditemukan atau belum diterbitkan.", 404);
       }
@@ -1918,7 +1869,7 @@ async function route(request, env) {
   }
   if (path === "/api/public/articles" && method === "POST") {
     try {
-      return json(await createPublicArticle(env, request, await readJson(request, 1024 * 1024)), 201);
+      return json(await createPublicArticle(env, await readJson(request, 1024 * 1024)), 201);
     } catch (error) {
       if (error instanceof InputError) return errorResponse(error.message, error.status);
       throw error;
@@ -1929,7 +1880,7 @@ async function route(request, env) {
   }
   if (path === "/api/public/playlists" && method === "POST") {
     try {
-      return json(await createPublicPlaylist(env, request, await readJson(request)), 201);
+      return json(await createPublicPlaylist(env, await readJson(request)), 201);
     } catch (error) {
       if (error instanceof InputError) return errorResponse(error.message, error.status);
       throw error;
@@ -1944,7 +1895,7 @@ async function route(request, env) {
         return playlist ? json(playlist) : errorResponse("Playlist tidak ditemukan.", 404);
       }
       if (method === "PUT") {
-        const playlist = await updatePublicPlaylist(env, request, id, await readJson(request));
+        const playlist = await updatePublicPlaylist(env, id, await readJson(request));
         return playlist ? json(playlist) : errorResponse("Playlist tidak ditemukan.", 404);
       }
     } catch (error) {

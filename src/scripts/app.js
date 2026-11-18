@@ -1,8 +1,6 @@
 (function () {
   "use strict";
 
-  document.getElementById("public-article-catalog")?.remove();
-
   const TYPES = ["Dunia", "Karakter", "Alur", "Tempat", "Catatan"];
   const STORY_CATEGORIES = ["Canon", "Alternative", "Retelling", "Sidequel", "Spin-off", "Reboot", "Restart", "What if"];
   const pageContent = document.getElementById("page-content");
@@ -335,7 +333,7 @@
       <p>${safeText(attribute.summary || "Buka artikel untuk membaca deskripsi.")}</p>`;
     const main = isDraft
       ? `<button class="note-card-main attribute-card-main" type="button" data-action="edit-attribute" data-id="${escapeHtml(attribute.id)}">${content}</button>`
-      : `<a class="note-card-main" href="/#/attribute/${encodeURIComponent(attribute.slug)}">${content}</a>`;
+      : `<a class="note-card-main" href="/attribute/${encodeURIComponent(attribute.slug)}">${content}</a>`;
     const editButton = `<div class="card-admin-actions">    <button class="button button-quiet" type="button" data-action="edit-attribute" data-id="${escapeHtml(attribute.id)}">Ubah</button><button class="button button-quiet" type="button" data-action="delete-attribute" data-id="${escapeHtml(attribute.id)}">Hapus</button></div>`;
     return `<article class="note-card attribute-card">
       ${main}
@@ -538,6 +536,7 @@
   function render() {
     if (!isReady) return;
     const route = getRoute();
+    document.getElementById("public-article-catalog").hidden = route.page !== "home";
     document.getElementById("note-count").textContent = String(notes.length);
     document.getElementById("topbar-context").textContent = route.page === "admin" ? "RUANG PENGELOLA" : route.page === "guide" ? "PANDUAN PENGGUNA" : route.page === "playlists" || route.page === "playlist" ? "PLAYLIST CERITA" : route.page === "attribute" || route.page === "attributes" ? "ARTIKEL ATRIBUT" : "PORTAL CERITA & GAGASAN";
     document.getElementById("admin-link").textContent = profile ? "Beranda" : "Masuk";

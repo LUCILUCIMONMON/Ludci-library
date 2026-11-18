@@ -59,6 +59,15 @@ kbd { padding: 2px 5px; border: 1px solid #e1e6ec; border-radius: 3px; color: #9
 
 .main-area { width: 100%; min-height: calc(100vh - 112px); }
 .page-content { max-width: 1160px; min-height: calc(100vh - 145px); margin: 0 auto; padding: 32px 28px 40px; }
+.public-article-catalog { max-width: 1160px; margin: 0 auto; padding: 0 28px 38px; }
+.public-article-catalog > section + section { margin-top: 25px; }
+.public-catalog-list { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.public-catalog-list li { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 5px; background: #fff; }
+.public-catalog-list li > a { display: grid; min-width: 0; flex: 1; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 7px 10px; }
+.public-catalog-list li > a strong { overflow: hidden; color: #2e4b69; font-family: Georgia, "Times New Roman", serif; font-size: 13px; text-overflow: ellipsis; }
+.public-catalog-list li > a > span:last-child { grid-column: 2; overflow: hidden; color: #687a8c; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.public-catalog-list li > a:hover strong { color: #234b75; text-decoration: underline; }
+.public-catalog-list time { flex: 0 0 auto; color: #8795a4; font-size: 9px; }
 .footer-note { padding: 0 20px 19px; color: #8795a4; text-align: center; font-size: 10px; }
 .eyebrow { color: #6f86a0; font-size: 9px; font-weight: 700; letter-spacing: 1.3px; }
 .home-hero { position: relative; overflow: hidden; padding: 34px 38px; border: 1px solid #d8e4f0; border-radius: 8px; background: linear-gradient(110deg, #edf4fb 0%, #f7fafd 66%, #e8f0f8 100%); }
@@ -266,6 +275,7 @@ textarea.text-field { resize: vertical; line-height: 1.65; }
   .search-box kbd { display: none; }
   .button-add { min-height: 32px; padding: 0 9px; font-size: 9px; }
   .page-content { padding: 21px 13px 30px; }
+  .public-article-catalog { padding: 0 13px 30px; }
   .home-hero { padding: 25px 20px; }
   .home-hero::before, .home-hero::after, .hero-spark { opacity: .4; }
   .home-hero h1 { font-size: 29px; }
@@ -320,6 +330,7 @@ textarea.text-field { resize: vertical; line-height: 1.65; }
   .search-box { height: 44px; }
   .search-box input { font-size: 16px; }
   .page-content { padding: 22px 15px 34px; }
+  .public-article-catalog { padding: 0 15px 34px; }
   .home-hero { padding: 26px 19px; }
   .home-hero h1 { font-size: 32px; }
   .home-hero p, .guide-intro p { font-size: 16px; line-height: 1.7; }
@@ -333,6 +344,9 @@ textarea.text-field { resize: vertical; line-height: 1.65; }
   .card-date, .card-meta { font-size: 11px; }
   .card-story-labels .tag { font-size: 11px; }
   .page-heading h1 { font-size: 29px; }
+  .public-catalog-list li { align-items: flex-start; flex-direction: column; gap: 7px; }
+  .public-catalog-list li > a { width: 100%; }
+  .public-catalog-list time { padding-left: 2px; }
   .page-heading p, .guide-section p, .guide-section li, .guide-footer p { font-size: 15px; }
   .result-count { font-size: 12px; }
   .guide-toc a { padding: 9px 10px; font-size: 13px; }
