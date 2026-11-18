@@ -2,6 +2,12 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 import sanitizeHtml from "sanitize-html";
 
 const ARTICLE_TYPES = new Set(["Dunia", "Karakter", "Alur", "Tempat", "Catatan"]);
+const STORY_CATEGORIES = new Set([
+  "Canon", "Alternative", "Retelling", "Sidequel", "Spin-off", "Reboot", "Restart", "What if"
+]);
+const PUBLIC_AUTHOR_ID = "public-contributor";
+const PUBLIC_SUBMISSION_LIMIT = 5;
+const PUBLIC_SUBMISSION_WINDOW_SECONDS = 60 * 60;
 const IMAGE_TYPES = new Map([
   ["image/jpeg", "jpg"],
   ["image/png", "png"],
@@ -83,6 +89,41 @@ async function getIdentity(request, env) {
     };
   }
 
+  function validateAttributeInput(body, forcedVisibility) {
+    const title = typeof body.title === "string" ? body.title.trim() : "";
+    const type = body.type === undefined ? "Catatan" : body.type;
+    const summary = typeof body.summary === "string" ? body.summary.trim() : "";
+    const content = sanitizeArticleContent(typeof body.content === "string" ? body.content : "");
+    const visibility = forcedVisibility || body.visibility || "draft";
+    if (!title || title.length > 120) throw new InputError("Nama entri wajib diisi dan maksimal 120 karakter.");
+    if (!ARTICLE_TYPES.has(type)) throw new InputError("Jenis entri tidak valid.");
+    if (summary.length > 500) throw new InputError("Ringkasan maksimal 500 karakter.");
+    if (content.length > 200000) throw new InputError("Deskripsi maksimal 200.000 karakter.");
+    if (!["draft", "published"].includes(visibility)) throw new InputError("Status entri tidak valid.");
+    return { title, type, summary, content, visibility };
+  }
+
+  async function createAttributeEntry(env, input) {
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const slug = `${slugBase(input.title)}-${id.slice(0, 8)}`;
+    await env.DB.prepare(`
+      INSERT INTO attribute_entries (id, slug, title, type, summary, content, visibility, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(id, slug, input.title, input.type, input.summary, input.content, input.visibility, now, now).run();
+    return id;
+  }
+
+  async function updateAttributeEntry(env, id, input) {
+    const now = new Date().toISOString();
+    const result = await env.DB.prepare(`
+      UPDATE attribute_entries
+      SET title = ?, type = ?, summary = ?, content = ?, visibility = ?, updated_at = ?
+      WHERE id = ?
+    `).bind(input.title, input.type, input.summary, input.content, input.visibility, now, id).run();
+    return Number(result.meta?.changes || 0) > 0;
+  }
+
   const teamDomain = String(env.ACCESS_TEAM_DOMAIN || "").replace(/\/+$/, "");
   const audiences = String(env.ACCESS_AUD || "").split(",").map((value) => value.trim()).filter(Boolean);
   const allowedEmail = String(env.ADMIN_EMAIL || "").trim().toLowerCase();
@@ -131,6 +172,18 @@ async function ensureProfile(env, identity) {
     .bind(identity.id).first();
 }
 
+function storyCategoriesFromJson(value) {
+  try {
+    const parsed = JSON.parse(value || '["Canon"]');
+    if (Array.isArray(parsed)) {
+      return [...new Set(parsed.filter((category) => STORY_CATEGORIES.has(category)))];
+    }
+  } catch {
+    console.warn("Invalid story_categories_json found for an article.");
+  }
+  return ["Canon"];
+}
+
 function articleFromRow(row, admin = false) {
   let tags = [];
   try {
@@ -139,6 +192,7 @@ function articleFromRow(row, admin = false) {
   } catch {
     console.warn("Invalid tags_json found for an article.");
   }
+  const storyCategories = storyCategoriesFromJson(row.story_categories_json);
   return {
     id: row.id,
     slug: row.slug,
@@ -150,7 +204,16 @@ function articleFromRow(row, admin = false) {
     parentId: row.parent_id || "",
     parentSlug: row.parent_slug || "",
     parentTitle: row.parent_title || "",
-    relatedIds: row.relatedIds || [],
+    mainStoryId: row.main_story_id || "",
+    mainStorySlug: row.main_story_slug || "",
+    mainStoryTitle: row.main_story_title || "",
+    storyCategories,
+    isHiddenStory: Number(row.is_hidden_story) === 1,
+    relations: row.relations || (row.relatedIds || []).map((targetId) => ({ targetId, label: "terkait" })),
+    relatedIds: row.relations
+      ? row.relations.map((relation) => relation.targetId)
+      : row.relatedIds || [],
+    attributes: row.attributes || [],
     tags,
     imageKey: admin ? row.image_key || "" : undefined,
     imageUrl: row.image_key
@@ -166,7 +229,7 @@ function slugBase(title) {
     .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 70) || "artikel";
 }
 
-async function validateRelations(env, identity, articleId, parentId, relatedIds) {
+async function validateRelations(env, identity, articleId, parentId, relations, mainStoryId = "") {
   if (parentId) {
     if (parentId === articleId) throw new InputError("Artikel tidak bisa menjadi parent untuk dirinya sendiri.");
     let currentId = parentId;
@@ -176,25 +239,42 @@ async function validateRelations(env, identity, articleId, parentId, relatedIds)
         throw new InputError("Hubungan parent tidak boleh membentuk lingkaran.");
       }
       seen.add(currentId);
-      const current = await env.DB.prepare("SELECT parent_id FROM articles WHERE id = ? AND owner_id = ?")
-        .bind(currentId, identity.id).first();
+      const current = await env.DB.prepare("SELECT parent_id FROM articles WHERE id = ? AND owner_id IN (?, ?)")
+        .bind(currentId, identity.id, PUBLIC_AUTHOR_ID).first();
       if (!current) throw new InputError("Artikel parent tidak ditemukan.");
       currentId = current.parent_id || "";
     }
   }
 
-  const uniqueRelatedIds = [...new Set(relatedIds.filter((id) => typeof id === "string" && id && id !== articleId))];
-  if (uniqueRelatedIds.length > 100) throw new InputError("Pilih maksimal 100 artikel terkait.");
-  if (uniqueRelatedIds.length) {
-    const placeholders = uniqueRelatedIds.map(() => "?").join(",");
-    const result = await env.DB.prepare(
-      `SELECT COUNT(*) AS count FROM articles WHERE owner_id = ? AND id IN (${placeholders})`
-    ).bind(identity.id, ...uniqueRelatedIds).first();
-    if (Number(result?.count) !== uniqueRelatedIds.length) {
-      throw new InputError("Satu atau beberapa artikel terkait tidak ditemukan.");
+  if (relations.length > 100) throw new InputError("Pilih maksimal 100 hubungan cerita.");
+  if (relations.some((relation) => relation.targetId === articleId)) {
+    throw new InputError("Cerita tidak bisa terhubung dengan dirinya sendiri.");
+  }
+  if (relations.length) {
+    const placeholders = relations.map(() => "?").join(",");
+    const publicContributor = identity.id === PUBLIC_AUTHOR_ID;
+    const statement = publicContributor
+      ? `SELECT COUNT(*) AS count FROM articles WHERE visibility = 'published' AND id IN (${placeholders})`
+      : `SELECT COUNT(*) AS count FROM articles WHERE owner_id IN (?, ?) AND id IN (${placeholders})`;
+    const bindings = publicContributor
+      ? relations.map((relation) => relation.targetId)
+      : [identity.id, PUBLIC_AUTHOR_ID, ...relations.map((relation) => relation.targetId)];
+    const result = await env.DB.prepare(statement).bind(...bindings).first();
+    if (Number(result?.count) !== relations.length) {
+      throw new InputError("Satu atau beberapa cerita yang dihubungkan tidak ditemukan atau belum terbit.");
     }
   }
-  return uniqueRelatedIds;
+  if (mainStoryId) {
+    if (mainStoryId === articleId) throw new InputError("Cerita tidak bisa menjadi cerita utama untuk dirinya sendiri.");
+    const publicContributor = identity.id === PUBLIC_AUTHOR_ID;
+    const statement = publicContributor
+      ? "SELECT id FROM articles WHERE id = ? AND visibility = 'published'"
+      : "SELECT id FROM articles WHERE id = ? AND owner_id IN (?, ?)";
+    const bindings = publicContributor ? [mainStoryId] : [mainStoryId, identity.id, PUBLIC_AUTHOR_ID];
+    const mainStory = await env.DB.prepare(statement).bind(...bindings).first();
+    if (!mainStory) throw new InputError("Cerita utama tidak ditemukan atau belum diterbitkan.");
+  }
+  return relations;
 }
 
 function validateArticleInput(body) {
@@ -204,12 +284,81 @@ function validateArticleInput(body) {
   const content = sanitizeArticleContent(typeof body.content === "string" ? body.content : "");
   const visibility = body.visibility === undefined ? "draft" : body.visibility;
   const parentId = typeof body.parentId === "string" ? body.parentId : "";
+  if (body.mainStoryId !== undefined && typeof body.mainStoryId !== "string") {
+    throw new InputError("Cerita utama tidak valid.");
+  }
+  const mainStoryId = typeof body.mainStoryId === "string" ? body.mainStoryId.trim() : "";
+  const storyCategories = body.storyCategories === undefined
+    ? ["Canon"]
+    : Array.isArray(body.storyCategories)
+      ? [...new Set(body.storyCategories.filter((category) => typeof category === "string").map((category) => category.trim()))]
+      : null;
+  const isHiddenStory = body.isHiddenStory === undefined ? false : body.isHiddenStory;
   const tags = Array.isArray(body.tags)
     ? [...new Set(body.tags.filter((tag) => typeof tag === "string").map((tag) => tag.trim()).filter(Boolean))]
     : [];
-  const relatedIds = Array.isArray(body.relatedIds) ? [...new Set(body.relatedIds)] : [];
+  if (body.relations !== undefined && !Array.isArray(body.relations)) {
+    throw new InputError("Daftar hubungan cerita tidak valid.");
+  }
+  const relationSource = Array.isArray(body.relations)
+    ? body.relations
+    : Array.isArray(body.relatedIds)
+      ? body.relatedIds.map((targetId) => ({ targetId, label: "terkait" }))
+      : [];
+  const relationTargets = new Set();
+  const relations = relationSource.map((item) => {
+    const targetId = typeof item?.targetId === "string" ? item.targetId.trim() : "";
+    const label = typeof item?.label === "string" ? item.label.trim() : "";
+    if (!targetId || targetId.length > 100) throw new InputError("Cerita tujuan hubungan tidak valid.");
+    if (label.length > 60) throw new InputError("Label hubungan maksimal 60 karakter.");
+    if (relationTargets.has(targetId)) throw new InputError("Satu cerita hanya boleh dipilih sekali pada daftar hubungan.");
+    relationTargets.add(targetId);
+    return { targetId, label: label || "terkait" };
+  });
+  if (body.attributes !== undefined && !Array.isArray(body.attributes)) {
+    throw new InputError("Daftar atribut cerita tidak valid.");
+  }
+  const attributes = [];
+  const attributeIds = new Set();
+  for (const item of Array.isArray(body.attributes) ? body.attributes : []) {
+    if (typeof item?.id === "string") {
+      const id = item.id.trim();
+      if (!id || id.length > 100 || attributeIds.has(id)) {
+        throw new InputError("Atribut cerita tidak valid atau dipilih lebih dari sekali.");
+      }
+      attributeIds.add(id);
+      attributes.push({ id });
+      continue;
+    }
+
+    const legacyName = typeof item?.name === "string" ? item.name.trim() : "";
+    const legacyValue = typeof item?.value === "string" ? item.value.trim() : "";
+    const title = typeof item?.title === "string" ? item.title.trim() : legacyValue;
+    const type = item?.type === undefined ? "Catatan" : item.type;
+    const summary = typeof item?.summary === "string"
+      ? item.summary.trim()
+      : legacyName ? `Atribut lama: ${legacyName}` : "";
+    const content = sanitizeArticleContent(typeof item?.content === "string" ? item.content : "");
+    if (!title || title.length > 120 || !ARTICLE_TYPES.has(type)) {
+      throw new InputError("Setiap atribut harus memiliki judul dan jenis entri yang valid.");
+    }
+    if (summary.length > 500 || content.length > 200000) {
+      throw new InputError("Ringkasan atribut maksimal 500 karakter dan deskripsinya maksimal 200.000 karakter.");
+    }
+    attributes.push({ title, type, summary, content });
+  }
+  if (attributes.length > 50) throw new InputError("Maksimal 50 atribut per cerita.");
+  if (relations.length > 100) throw new InputError("Pilih maksimal 100 hubungan cerita.");
   const imageKey = typeof body.imageKey === "string" ? body.imageKey : "";
 
+  if (!storyCategories || !storyCategories.length || storyCategories.length > STORY_CATEGORIES.size
+    || storyCategories.some((category) => !STORY_CATEGORIES.has(category))) {
+    throw new InputError("Pilih setidaknya satu kategori cerita yang valid.");
+  }
+  if (body.isHiddenStory !== undefined && typeof isHiddenStory !== "boolean") {
+    throw new InputError("Status cerita tersembunyi tidak valid.");
+  }
+  if (mainStoryId.length > 100) throw new InputError("Cerita utama tidak valid.");
   if (!title || title.length > 120) throw new InputError("Judul wajib diisi dan maksimal 120 karakter.");
   if (!ARTICLE_TYPES.has(type)) throw new InputError("Jenis artikel tidak valid.");
   if (!["draft", "published"].includes(visibility)) throw new InputError("Status artikel tidak valid.");
@@ -220,7 +369,67 @@ function validateArticleInput(body) {
   if (imageKey && !/^images\/[a-f0-9-]+\.(jpg|png|webp|gif)$/.test(imageKey)) {
     throw new InputError("Gambar artikel tidak valid.");
   }
-  return { title, type, summary, content, visibility, parentId, tags, relatedIds, imageKey };
+  return {
+    title, type, summary, content, visibility, parentId, mainStoryId, storyCategories, isHiddenStory, tags,
+    relations, relatedIds: relations.map((relation) => relation.targetId), attributes, imageKey
+  };
+}
+
+async function resolveAttributeEntries(env, identity, attributes) {
+  const result = [];
+  const resolvedIds = new Set();
+  const newEntriesByDefinition = new Map();
+  for (const attribute of attributes) {
+    if (attribute.id) {
+      const publicContributor = identity.id === PUBLIC_AUTHOR_ID;
+      const statement = publicContributor
+        ? `SELECT e.id, e.slug, e.title, e.type, e.summary, e.content
+           FROM attribute_entries e
+           WHERE e.id = ? AND e.visibility = 'published'`
+        : "SELECT id, slug, title, type, summary, content FROM attribute_entries WHERE id = ?";
+      const entry = await env.DB.prepare(statement).bind(attribute.id).first();
+      if (!entry) throw new InputError("Atribut tidak ditemukan atau belum diterbitkan.");
+      if (!resolvedIds.has(entry.id)) {
+        result.push({ ...entry, isNew: false });
+        resolvedIds.add(entry.id);
+      }
+      continue;
+    }
+    const definition = JSON.stringify([attribute.title, attribute.type, attribute.summary, attribute.content]);
+    let entry = newEntriesByDefinition.get(definition);
+    if (!entry) {
+      const publicContributor = identity.id === PUBLIC_AUTHOR_ID;
+      const statement = publicContributor
+        ? `SELECT e.id, e.slug, e.title, e.type, e.summary, e.content
+           FROM attribute_entries e
+           WHERE e.title = ? AND e.type = ? AND e.summary = ? AND e.content = ?
+             AND e.visibility = 'published'
+           LIMIT 1`
+        : `SELECT id, slug, title, type, summary, content
+           FROM attribute_entries
+           WHERE title = ? AND type = ? AND summary = ? AND content = ?
+           LIMIT 1`;
+      entry = await env.DB.prepare(statement)
+        .bind(attribute.title, attribute.type, attribute.summary, attribute.content).first();
+      if (entry) {
+        entry = { ...entry, isNew: false };
+      } else {
+        const id = crypto.randomUUID();
+        entry = {
+          ...attribute,
+          id,
+          slug: `${slugBase(attribute.title)}-${id.slice(0, 8)}`,
+          isNew: true
+        };
+      }
+      newEntriesByDefinition.set(definition, entry);
+    }
+    if (!resolvedIds.has(entry.id)) {
+      result.push(entry);
+      resolvedIds.add(entry.id);
+    }
+  }
+  return result;
 }
 
 async function assertOwnedImage(env, identity, imageKey) {
@@ -230,52 +439,76 @@ async function assertOwnedImage(env, identity, imageKey) {
   if (!row) throw new InputError("Gambar tidak ditemukan atau bukan milik akun ini.");
 }
 
-async function syncLinks(env, sourceId, relatedIds, now) {
-  const statements = [
-    env.DB.prepare("DELETE FROM article_links WHERE source_id = ?").bind(sourceId),
-    ...relatedIds.map((targetId) => env.DB.prepare(
-      "INSERT INTO article_links (source_id, target_id, created_at) VALUES (?, ?, ?)"
-    ).bind(sourceId, targetId, now))
-  ];
-  await env.DB.batch(statements);
-}
-
 async function getArticle(env, identity, id) {
   const row = await env.DB.prepare(`
-    SELECT a.*, p.slug AS parent_slug, p.title AS parent_title
+    SELECT a.*, p.slug AS parent_slug, p.title AS parent_title,
+      m.slug AS main_story_slug, m.title AS main_story_title
     FROM articles a
     LEFT JOIN articles p ON p.id = a.parent_id
+    LEFT JOIN articles m ON m.id = a.main_story_id
     WHERE a.id = ? AND a.owner_id = ?
   `).bind(id, identity.id).first();
   if (!row) return null;
-  const links = await env.DB.prepare("SELECT target_id FROM article_links WHERE source_id = ? ORDER BY target_id")
-    .bind(id).all();
-  return articleFromRow({ ...row, relatedIds: links.results.map((link) => link.target_id) }, true);
+  const [links, attributes] = await Promise.all([
+    env.DB.prepare("SELECT target_id, relation_label FROM article_links WHERE source_id = ? ORDER BY target_id")
+      .bind(id).all(),
+    env.DB.prepare(`
+      SELECT e.id, e.slug, e.title, e.type, e.summary, e.content, e.visibility
+      FROM story_attribute_links l
+      JOIN attribute_entries e ON e.id = l.attribute_id
+      WHERE l.story_id = ? ORDER BY e.type, e.title
+    `)
+      .bind(id).all()
+  ]);
+  return articleFromRow({
+    ...row,
+    relations: links.results.map((link) => ({ targetId: link.target_id, label: link.relation_label })),
+    attributes: attributes.results
+  }, true);
 }
 
 async function getAdminArticles(env, identity) {
   const result = await env.DB.prepare(`
-    SELECT a.*, p.slug AS parent_slug, p.title AS parent_title
+    SELECT a.*, p.slug AS parent_slug, p.title AS parent_title,
+      m.slug AS main_story_slug, m.title AS main_story_title
     FROM articles a
     LEFT JOIN articles p ON p.id = a.parent_id
-    WHERE a.owner_id = ?
+    LEFT JOIN articles m ON m.id = a.main_story_id
+    WHERE a.owner_id IN (?, ?)
     ORDER BY a.updated_at DESC
-  `).bind(identity.id).all();
-  const links = await env.DB.prepare(`
-    SELECT l.source_id, l.target_id
+  `).bind(identity.id, PUBLIC_AUTHOR_ID).all();
+  const [links, attributes] = await Promise.all([
+    env.DB.prepare(`
+    SELECT l.source_id, l.target_id, l.relation_label
     FROM article_links l
     JOIN articles a ON a.id = l.source_id
-    WHERE a.owner_id = ?
-  `).bind(identity.id).all();
-  const bySource = new Map();
+    WHERE a.owner_id IN (?, ?)
+  `).bind(identity.id, PUBLIC_AUTHOR_ID).all(),
+    env.DB.prepare(`
+      SELECT l.story_id, e.id, e.slug, e.title, e.type, e.summary, e.content, e.visibility
+      FROM story_attribute_links l
+      JOIN attribute_entries e ON e.id = l.attribute_id
+      JOIN articles a ON a.id = l.story_id
+      WHERE a.owner_id IN (?, ?)
+      ORDER BY e.type, e.title
+    `).bind(identity.id, PUBLIC_AUTHOR_ID).all()
+  ]);
+  const relationsBySource = new Map();
   for (const link of links.results) {
-    const targets = bySource.get(link.source_id) || [];
-    targets.push(link.target_id);
-    bySource.set(link.source_id, targets);
+    const relations = relationsBySource.get(link.source_id) || [];
+    relations.push({ targetId: link.target_id, label: link.relation_label });
+    relationsBySource.set(link.source_id, relations);
+  }
+  const attributesByArticle = new Map();
+  for (const attribute of attributes.results) {
+    const values = attributesByArticle.get(attribute.story_id) || [];
+    values.push(attribute);
+    attributesByArticle.set(attribute.story_id, values);
   }
   return result.results.map((row) => articleFromRow({
     ...row,
-    relatedIds: bySource.get(row.id) || []
+    relations: relationsBySource.get(row.id) || [],
+    attributes: attributesByArticle.get(row.id) || []
   }, true));
 }
 
@@ -283,19 +516,159 @@ async function publicArticles(env, query) {
   const needle = query.trim().slice(0, 100);
   const pattern = `%${needle.replace(/[\\%_]/g, "\\$&")}%`;
   const rows = await env.DB.prepare(`
-    SELECT a.id, a.slug, a.title, a.type, a.summary,
+    SELECT a.id, a.slug, a.title, a.type, a.summary, a.story_categories_json,
+      a.is_hidden_story,
+      CASE WHEN main.id IS NOT NULL THEN a.main_story_id ELSE NULL END AS main_story_id,
+      main.slug AS main_story_slug, main.title AS main_story_title,
       CASE WHEN p.id IS NOT NULL THEN a.parent_id ELSE NULL END AS parent_id,
       a.image_key, a.tags_json, a.created_at, a.updated_at,
       p.slug AS parent_slug, p.title AS parent_title
     FROM articles a
     LEFT JOIN articles p ON p.id = a.parent_id AND p.visibility = 'published'
+    LEFT JOIN articles main ON main.id = a.main_story_id AND main.visibility = 'published'
     WHERE a.visibility = 'published'
       AND (? = '' OR a.title LIKE ? ESCAPE '\\' OR a.summary LIKE ? ESCAPE '\\'
         OR a.content LIKE ? ESCAPE '\\' OR a.tags_json LIKE ? ESCAPE '\\')
     ORDER BY a.updated_at DESC
     LIMIT 500
   `).bind(needle, pattern, pattern, pattern, pattern).all();
-  return rows.results.map((row) => articleFromRow(row));
+  if (!rows.results.length) return [];
+  const ids = rows.results.map((row) => row.id);
+  const placeholders = ids.map(() => "?").join(",");
+  const [links, attributes] = await Promise.all([
+    env.DB.prepare(`
+      SELECT l.source_id, l.target_id, l.relation_label
+      FROM article_links l
+      JOIN articles target ON target.id = l.target_id AND target.visibility = 'published'
+      WHERE l.source_id IN (${placeholders})
+    `).bind(...ids).all(),
+    env.DB.prepare(`
+      SELECT l.story_id, e.id, e.slug, e.title, e.type, e.summary
+      FROM story_attribute_links l
+      JOIN attribute_entries e ON e.id = l.attribute_id AND e.visibility = 'published'
+      WHERE l.story_id IN (${placeholders})
+      ORDER BY e.type, e.title
+    `).bind(...ids).all()
+  ]);
+  const relationsBySource = new Map();
+  for (const link of links.results) {
+    const relations = relationsBySource.get(link.source_id) || [];
+    relations.push({ targetId: link.target_id, label: link.relation_label });
+    relationsBySource.set(link.source_id, relations);
+  }
+  const attributesByArticle = new Map();
+  for (const attribute of attributes.results) {
+    const values = attributesByArticle.get(attribute.story_id) || [];
+    values.push(attribute);
+    attributesByArticle.set(attribute.story_id, values);
+  }
+  return rows.results.map((row) => articleFromRow({
+    ...row,
+    relations: relationsBySource.get(row.id) || [],
+    attributes: attributesByArticle.get(row.id) || []
+  }));
+}
+
+function attributeEntryFromRow(row) {
+  return {
+    id: row.id,
+    slug: row.slug,
+    title: row.title,
+    type: row.type,
+    summary: row.summary,
+    ...(row.content !== undefined ? { content: row.content } : {}),
+    ...(row.visibility !== undefined ? { visibility: row.visibility } : {}),
+    storyCount: Number(row.story_count || 0)
+  };
+}
+
+async function getPublicAttributeEntries(env) {
+  const result = await env.DB.prepare(`
+    SELECT e.id, e.slug, e.title, e.type, e.summary, e.visibility,
+      COUNT(DISTINCT s.id) AS story_count
+    FROM attribute_entries e
+    LEFT JOIN story_attribute_links l ON l.attribute_id = e.id
+    LEFT JOIN articles s ON s.id = l.story_id AND s.visibility = 'published'
+    WHERE e.visibility = 'published'
+    GROUP BY e.id
+    ORDER BY e.type, e.title
+    LIMIT 500
+  `).all();
+  return result.results.map(attributeEntryFromRow);
+}
+
+async function getAdminAttributeEntries(env) {
+  const result = await env.DB.prepare(`
+    SELECT e.id, e.slug, e.title, e.type, e.summary, e.content, e.visibility,
+      COUNT(DISTINCT l.story_id) AS story_count
+    FROM attribute_entries e
+    LEFT JOIN story_attribute_links l ON l.attribute_id = e.id
+    GROUP BY e.id
+    ORDER BY e.type, e.title
+    LIMIT 1000
+  `).all();
+  return result.results.map(attributeEntryFromRow);
+}
+
+async function getPublicAttribute(env, slug) {
+  const attribute = await env.DB.prepare(`
+    SELECT e.id, e.slug, e.title, e.type, e.summary, e.content, e.visibility
+    FROM attribute_entries e
+    WHERE e.slug = ? AND e.visibility = 'published'
+  `).bind(slug).first();
+  if (!attribute) return null;
+  const stories = await env.DB.prepare(`
+    SELECT s.id, s.slug, s.title, s.type, s.summary, s.updated_at
+    FROM story_attribute_links l
+    JOIN articles s ON s.id = l.story_id AND s.visibility = 'published'
+    WHERE l.attribute_id = ?
+    ORDER BY s.title
+  `).bind(attribute.id).all();
+  return {
+    ...attributeEntryFromRow(attribute),
+    content: attribute.content,
+    stories: stories.results
+  };
+}
+
+function validateAttributeInput(body, forcedVisibility) {
+  const title = typeof body.title === "string" ? body.title.trim() : "";
+  const type = body.type === undefined ? "Catatan" : body.type;
+  const summary = typeof body.summary === "string" ? body.summary.trim() : "";
+  const content = sanitizeArticleContent(typeof body.content === "string" ? body.content : "");
+  const visibility = forcedVisibility || body.visibility || "draft";
+  if (!title || title.length > 120) throw new InputError("Nama entri wajib diisi dan maksimal 120 karakter.");
+  if (!ARTICLE_TYPES.has(type)) throw new InputError("Jenis entri tidak valid.");
+  if (summary.length > 500) throw new InputError("Ringkasan maksimal 500 karakter.");
+  if (content.length > 200000) throw new InputError("Deskripsi maksimal 200.000 karakter.");
+  if (!["draft", "published"].includes(visibility)) throw new InputError("Status entri tidak valid.");
+  return { title, type, summary, content, visibility };
+}
+
+async function createAttributeEntry(env, input) {
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const slug = `${slugBase(input.title)}-${id.slice(0, 8)}`;
+  await env.DB.prepare(`
+    INSERT INTO attribute_entries (id, slug, title, type, summary, content, visibility, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(id, slug, input.title, input.type, input.summary, input.content, input.visibility, now, now).run();
+  return id;
+}
+
+async function updateAttributeEntry(env, id, input) {
+  const now = new Date().toISOString();
+  const result = await env.DB.prepare(`
+    UPDATE attribute_entries
+    SET title = ?, type = ?, summary = ?, content = ?, visibility = ?, updated_at = ?
+    WHERE id = ?
+  `).bind(input.title, input.type, input.summary, input.content, input.visibility, now, id).run();
+  return Number(result.meta?.changes || 0) > 0;
+}
+
+async function deleteAttributeEntry(env, id) {
+  const result = await env.DB.prepare("DELETE FROM attribute_entries WHERE id = ?").bind(id).run();
+  return Number(result.meta?.changes || 0) > 0;
 }
 
 function pageResponse(title, description, body, status = 200) {
@@ -346,26 +719,52 @@ function textContentHtml(content) {
 
 async function renderPublicArticle(env, slug) {
   const article = await env.DB.prepare(`
-    SELECT a.*, p.slug AS parent_slug, p.title AS parent_title
+    SELECT a.*, p.slug AS parent_slug, p.title AS parent_title,
+      main.slug AS main_story_slug, main.title AS main_story_title
     FROM articles a
     LEFT JOIN articles p ON p.id = a.parent_id AND p.visibility = 'published'
+    LEFT JOIN articles main ON main.id = a.main_story_id AND main.visibility = 'published'
     WHERE a.slug = ? AND a.visibility = 'published'
   `).bind(slug).first();
   if (!article) return pageResponse("Artikel tidak ditemukan", "Artikel publik tidak ditemukan.", `
     <div class="not-found"><h1>Artikel tidak ditemukan</h1><p>Artikel ini mungkin belum diterbitkan atau sudah dihapus.</p><a class="back-link" href="/">← Kembali ke beranda</a></div>
   `, 404);
 
-  const [childrenResult, relatedResult] = await Promise.all([
+  const [childrenResult, mainStoryChildrenResult, relatedResult, incomingResult, attributesResult, playlistsResult] = await Promise.all([
     env.DB.prepare("SELECT id, slug, title, type FROM articles WHERE parent_id = ? AND visibility = 'published' ORDER BY title")
       .bind(article.id).all(),
     env.DB.prepare(`
-      SELECT a.id, a.slug, a.title, a.type
+      SELECT id, slug, title, type, story_categories_json, is_hidden_story
+      FROM articles WHERE main_story_id = ? AND visibility = 'published'
+      ORDER BY title
+    `).bind(article.id).all(),
+    env.DB.prepare(`
+      SELECT a.id, a.slug, a.title, a.type, l.relation_label
       FROM article_links l JOIN articles a ON a.id = l.target_id
       WHERE l.source_id = ? AND a.visibility = 'published'
       ORDER BY a.title
+    `).bind(article.id).all(),
+    env.DB.prepare(`
+      SELECT a.id, a.slug, a.title, a.type, l.relation_label
+      FROM article_links l JOIN articles a ON a.id = l.source_id
+      WHERE l.target_id = ? AND a.visibility = 'published'
+      ORDER BY a.title
+    `).bind(article.id).all(),
+    env.DB.prepare(`
+      SELECT e.slug, e.title, e.type
+      FROM story_attribute_links l
+      JOIN attribute_entries e ON e.id = l.attribute_id AND e.visibility = 'published'
+      WHERE l.story_id = ? ORDER BY e.type, e.title
+    `)
+      .bind(article.id).all(),
+    env.DB.prepare(`
+      SELECT p.slug, p.title
+      FROM playlists p JOIN playlist_items i ON i.playlist_id = p.id
+      WHERE i.article_id = ?
+      ORDER BY p.title
     `).bind(article.id).all()
   ]);
-  const linkedArticle = (row) => `<a class="relation-link" href="/article/${encodeURIComponent(row.slug)}"><span>${escapeHtml(row.title)}</span><small>${escapeHtml(row.type)} →</small></a>`;
+  const linkedArticle = (row, label = "") => `<a class="relation-link" href="/article/${encodeURIComponent(row.slug)}"><span>${escapeHtml(row.title)}</span><small>${escapeHtml(label || row.type)} →</small></a>`;
   const parent = article.parent_slug
     ? `<a class="relation-link" href="/article/${encodeURIComponent(article.parent_slug)}"><span>${escapeHtml(article.parent_title)}</span><small>Bagian induk →</small></a>`
     : '<div class="relation-empty">Artikel utama.</div>';
@@ -380,27 +779,58 @@ async function renderPublicArticle(env, slug) {
     console.warn("Invalid tags_json found while rendering a published article.");
   }
   const related = relatedResult.results.length
-    ? relatedResult.results.map(linkedArticle).join("")
-    : '<div class="relation-empty">Tidak ada artikel terkait.</div>';
+    ? relatedResult.results.map((row) => linkedArticle(row, row.relation_label)).join("")
+    : '<div class="relation-empty">Belum ada hubungan keluar.</div>';
+  const incoming = incomingResult.results.length
+    ? incomingResult.results.map((row) => linkedArticle(row, `${row.relation_label} · menuju cerita ini`)).join("")
+    : '<div class="relation-empty">Belum ada cerita yang menghubungkan ke sini.</div>';
   const children = childrenResult.results.length
     ? childrenResult.results.map(linkedArticle).join("")
     : '<div class="relation-empty">Belum ada turunan yang diterbitkan.</div>';
+  const mainStoryChildren = mainStoryChildrenResult.results.length
+    ? mainStoryChildrenResult.results.map((row) => {
+      let categories = ["Canon"];
+      categories = storyCategoriesFromJson(row.story_categories_json);
+      const labels = [...categories, ...(row.is_hidden_story ? ["Cerita tersembunyi · lore rahasia"] : [])].join(" · ");
+      return linkedArticle(row, labels);
+    }).join("")
+    : '<div class="relation-empty">Belum ada cerita yang memilih ini sebagai cerita utama.</div>';
+  const attributes = attributesResult.results.length
+    ? attributesResult.results.map((attribute) => {
+      const href = `/#/attribute/${encodeURIComponent(attribute.slug)}`;
+      return `<a class="relation-link" href="${escapeHtml(href)}"><span>${escapeHtml(attribute.title)}</span><small>${escapeHtml(attribute.type)} · Buka atribut →</small></a>`;
+    }).join("")
+    : '<div class="relation-empty">Belum ada entri atribut.</div>';
+  const playlists = playlistsResult.results.length
+    ? playlistsResult.results.map((playlist) => `<a class="relation-link" href="/#/playlist/${encodeURIComponent(playlist.slug)}"><span>${escapeHtml(playlist.title)}</span><small>Buka playlist →</small></a>`).join("")
+    : '<div class="relation-empty">Cerita ini belum masuk playlist.</div>';
   const body = `
     <nav class="detail-breadcrumb" aria-label="Jejak navigasi"><a href="/">Beranda</a><span>/</span><span>${escapeHtml(article.title)}</span></nav>
     <article>
       ${image}
       <header class="detail-header">
         <span class="type-pill type-${escapeHtml(article.type.toLowerCase())}">${escapeHtml(article.type)}</span>
+        <div class="detail-tags story-category-tags">
+          ${storyCategoriesFromJson(article.story_categories_json).map((category) => `<span class="tag">${escapeHtml(category)}</span>`).join("")}
+          ${article.is_hidden_story ? '<span class="tag hidden-story-tag">Cerita tersembunyi · lore rahasia</span>' : ""}
+        </div>
         <h1>${escapeHtml(article.title)}</h1>
         ${article.summary ? `<p class="detail-summary">${escapeHtml(article.summary)}</p>` : ""}
         <div class="eyebrow">DIPERBARUI ${escapeHtml(new Intl.DateTimeFormat("id-ID", { day: "numeric", month: "short", year: "numeric" }).format(new Date(article.updated_at)).toLocaleUpperCase("id"))}</div>
       </header>
       <div class="detail-content">${textContentHtml(article.content)}</div>
       ${tags.length ? `<div class="detail-tags">${tags.map((tag) => `<span class="tag"># ${escapeHtml(tag)}</span>`).join("")}</div>` : ""}
-      <section class="relation-grid" aria-label="Hubungan artikel">
+      <section class="relation-grid" aria-label="Relasi cerita">
         <div class="relation-panel"><h3>Bagian dari</h3>${parent}</div>
         <div class="relation-panel"><h3>Turunan · ${childrenResult.results.length}</h3>${children}</div>
-        <div class="relation-panel"><h3>Terhubung dengan</h3>${related}</div>
+        <div class="relation-panel"><h3>Cerita utama</h3>${article.main_story_slug
+          ? `<a class="relation-link" href="/article/${encodeURIComponent(article.main_story_slug)}"><span>${escapeHtml(article.main_story_title)}</span><small>Cerita utama yang terkait →</small></a>`
+          : '<div class="relation-empty">Tidak ditautkan ke cerita utama tertentu.</div>'}</div>
+        <div class="relation-panel"><h3>Cerita yang terkait ke sini · ${mainStoryChildrenResult.results.length}</h3>${mainStoryChildren}</div>
+        <div class="relation-panel"><h3>Hubungan dari cerita ini</h3>${related}</div>
+        <div class="relation-panel"><h3>Terhubung dari cerita lain</h3>${incoming}</div>
+        <div class="relation-panel"><h3>Artikel atribut yang ditautkan</h3><div class="relation-list">${attributes}</div></div>
+        <div class="relation-panel"><h3>Playlist</h3>${playlists}</div>
       </section>
     </article>
     <a class="back-link" href="/">← Kembali ke beranda</a>`;
@@ -452,49 +882,241 @@ async function createArticle(env, identity, body) {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   const parentId = input.parentId || null;
-  const relatedIds = await validateRelations(env, identity, id, input.parentId, input.relatedIds);
+  const relations = await validateRelations(env, identity, id, input.parentId, input.relations, input.mainStoryId);
+  const attributes = await resolveAttributeEntries(env, identity, input.attributes);
   await assertOwnedImage(env, identity, input.imageKey);
   const slug = `${slugBase(input.title)}-${id.slice(0, 8)}`;
   const statements = [
     env.DB.prepare(`
       INSERT INTO articles (
         id, owner_id, slug, title, type, summary, content, visibility,
-        parent_id, image_key, tags_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        parent_id, image_key, tags_json, story_categories_json, is_hidden_story, main_story_id,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(id, identity.id, slug, input.title, input.type, input.summary,
-      input.content, input.visibility, parentId, input.imageKey, JSON.stringify(input.tags), now, now),
-    ...relatedIds.map((targetId) => env.DB.prepare(
-      "INSERT INTO article_links (source_id, target_id, created_at) VALUES (?, ?, ?)"
-    ).bind(id, targetId, now))
+      input.content, input.visibility, parentId, input.imageKey, JSON.stringify(input.tags),
+      JSON.stringify(input.storyCategories), input.isHiddenStory ? 1 : 0, input.mainStoryId || null, now, now),
+    ...relations.map(({ targetId, label }) => env.DB.prepare(
+      "INSERT INTO article_links (source_id, target_id, relation_label, created_at) VALUES (?, ?, ?, ?)"
+    ).bind(id, targetId, label, now)),
+    ...attributes.filter((attribute) => attribute.isNew).map((attribute) => env.DB.prepare(`
+      INSERT INTO attribute_entries (id, slug, title, type, summary, content, visibility, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(attribute.id, attribute.slug, attribute.title, attribute.type, attribute.summary, attribute.content, input.visibility, now, now)),
+    ...attributes.map((attribute) => env.DB.prepare(`
+      INSERT INTO story_attribute_links (story_id, attribute_id, created_at)
+      VALUES (?, ?, ?)
+    `).bind(id, attribute.id, now))
   ];
   await env.DB.batch(statements);
   return getArticle(env, identity, id);
 }
 
+async function limitPublicSubmission(env, request) {
+  const clientIp = request.headers.get("cf-connecting-ip") || "unknown";
+  const now = Math.floor(Date.now() / 1000);
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(clientIp)
+  );
+  const clientKey = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const windowStart = now - PUBLIC_SUBMISSION_WINDOW_SECONDS;
+  const result = await env.DB.prepare(`
+    INSERT INTO public_submission_limits (client_key, window_start, request_count)
+    VALUES (?, ?, 1)
+    ON CONFLICT(client_key) DO UPDATE SET
+      request_count = CASE
+        WHEN public_submission_limits.window_start <= ? THEN 1
+        ELSE public_submission_limits.request_count + 1
+      END,
+      window_start = CASE
+        WHEN public_submission_limits.window_start <= ? THEN excluded.window_start
+        ELSE public_submission_limits.window_start
+      END
+    RETURNING request_count
+  `).bind(clientKey, now, windowStart, windowStart).first();
+  if (!result) throw new Error("Public submission rate limit could not be recorded.");
+  const requestCount = Number(result.request_count);
+  if (requestCount === 1) {
+    await env.DB.prepare("DELETE FROM public_submission_limits WHERE window_start < ?")
+      .bind(now - 2 * 86400).run();
+  }
+  if (requestCount > PUBLIC_SUBMISSION_LIMIT) {
+    throw new InputError("Batas kirim artikel tercapai. Coba lagi satu jam lagi.", 429);
+  }
+}
+
+async function createPublicArticle(env, request, body) {
+  const input = validateArticleInput({
+    ...body,
+    visibility: "published",
+    parentId: "",
+    imageKey: ""
+  });
+  await limitPublicSubmission(env, request);
+  const identity = {
+    id: PUBLIC_AUTHOR_ID,
+    email: "public-contributor@lucimon.invalid",
+    name: "Kontributor publik"
+  };
+  await ensureProfile(env, identity);
+  return createArticle(env, identity, input);
+}
+
+function validatePlaylistInput(body) {
+  const title = typeof body.title === "string" ? body.title.trim() : "";
+  const description = typeof body.description === "string" ? body.description.trim() : "";
+  if (!Array.isArray(body.articleIds)) throw new InputError("Daftar cerita playlist tidak valid.");
+  if (body.articleIds.some((id) => typeof id !== "string" || !id.trim())) {
+    throw new InputError("ID cerita dalam playlist tidak valid.");
+  }
+  const articleIds = [...new Set(body.articleIds.map((id) => id.trim()))];
+  if (!title || title.length > 100) throw new InputError("Nama playlist wajib diisi dan maksimal 100 karakter.");
+  if (description.length > 500) throw new InputError("Deskripsi playlist maksimal 500 karakter.");
+  if (articleIds.length < 1 || articleIds.length > 100) {
+    throw new InputError("Playlist harus berisi 1 sampai 100 cerita.");
+  }
+  if (articleIds.some((id) => id.length > 100)) throw new InputError("ID cerita dalam playlist tidak valid.");
+  return { title, description, articleIds };
+}
+
+async function validatePublishedStories(env, articleIds) {
+  const placeholders = articleIds.map(() => "?").join(",");
+  const result = await env.DB.prepare(
+    `SELECT COUNT(*) AS count FROM articles WHERE visibility = 'published' AND id IN (${placeholders})`
+  ).bind(...articleIds).first();
+  if (Number(result?.count) !== articleIds.length) {
+    throw new InputError("Playlist hanya bisa berisi cerita yang sudah diterbitkan.");
+  }
+}
+
+async function publicPlaylists(env) {
+  const result = await env.DB.prepare(`
+    SELECT p.id, p.slug, p.title, p.description, p.updated_at,
+      COUNT(a.id) AS story_count
+    FROM playlists p
+    LEFT JOIN playlist_items i ON i.playlist_id = p.id
+    LEFT JOIN articles a ON a.id = i.article_id AND a.visibility = 'published'
+    GROUP BY p.id
+    ORDER BY p.updated_at DESC, p.title
+    LIMIT 500
+  `).all();
+  return result.results.map((row) => ({
+    id: row.id,
+    slug: row.slug,
+    title: row.title,
+    description: row.description,
+    storyCount: Number(row.story_count),
+    updatedAt: row.updated_at
+  }));
+}
+
+async function getPublicPlaylist(env, slug) {
+  const playlist = await env.DB.prepare(`
+    SELECT id, slug, title, description, created_at, updated_at
+    FROM playlists WHERE slug = ?
+  `).bind(slug).first();
+  if (!playlist) return null;
+  const stories = await env.DB.prepare(`
+    SELECT a.id, a.slug, a.title, a.type, a.summary, a.updated_at
+    FROM playlist_items i
+    JOIN articles a ON a.id = i.article_id
+    WHERE i.playlist_id = ? AND a.visibility = 'published'
+    ORDER BY i.position
+  `).bind(playlist.id).all();
+  return {
+    id: playlist.id,
+    slug: playlist.slug,
+    title: playlist.title,
+    description: playlist.description,
+    createdAt: playlist.created_at,
+    updatedAt: playlist.updated_at,
+    stories: stories.results
+  };
+}
+
+async function createPublicPlaylist(env, request, body) {
+  const input = validatePlaylistInput(body);
+  await limitPublicSubmission(env, request);
+  await validatePublishedStories(env, input.articleIds);
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const slug = `${slugBase(input.title)}-${id.slice(0, 8)}`;
+  await env.DB.batch([
+    env.DB.prepare(`
+      INSERT INTO playlists (id, slug, title, description, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).bind(id, slug, input.title, input.description, now, now),
+    ...input.articleIds.map((articleId, position) => env.DB.prepare(`
+      INSERT INTO playlist_items (playlist_id, article_id, position, created_at)
+      VALUES (?, ?, ?, ?)
+    `).bind(id, articleId, position, now))
+  ]);
+  return getPublicPlaylist(env, slug);
+}
+
+async function updatePublicPlaylist(env, request, id, body) {
+  const exists = await env.DB.prepare("SELECT id FROM playlists WHERE id = ?").bind(id).first();
+  if (!exists) return null;
+  const input = validatePlaylistInput(body);
+  await limitPublicSubmission(env, request);
+  await validatePublishedStories(env, input.articleIds);
+  const now = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare("UPDATE playlists SET title = ?, description = ?, updated_at = ? WHERE id = ?")
+      .bind(input.title, input.description, now, id),
+    env.DB.prepare("DELETE FROM playlist_items WHERE playlist_id = ?").bind(id),
+    ...input.articleIds.map((articleId, position) => env.DB.prepare(`
+      INSERT INTO playlist_items (playlist_id, article_id, position, created_at)
+      VALUES (?, ?, ?, ?)
+    `).bind(id, articleId, position, now))
+  ]);
+  const playlist = await env.DB.prepare("SELECT slug FROM playlists WHERE id = ?").bind(id).first();
+  return playlist ? getPublicPlaylist(env, playlist.slug) : null;
+}
+
+async function getManagedOwner(env, identity, id) {
+  const article = await env.DB.prepare(
+    "SELECT owner_id FROM articles WHERE id = ? AND owner_id IN (?, ?)"
+  ).bind(id, identity.id, PUBLIC_AUTHOR_ID).first();
+  return article ? { ...identity, id: article.owner_id } : null;
+}
+
 async function updateArticle(env, identity, id, body) {
-  const current = await env.DB.prepare("SELECT id, slug FROM articles WHERE id = ? AND owner_id = ?")
-    .bind(id, identity.id).first();
-  if (!current) return null;
+  const owner = await getManagedOwner(env, identity, id);
+  if (!owner) return null;
   const input = validateArticleInput(body);
   const parentId = input.parentId || null;
-  const relatedIds = await validateRelations(env, identity, id, input.parentId, input.relatedIds);
+  const relations = await validateRelations(env, identity, id, input.parentId, input.relations, input.mainStoryId);
+  const attributes = await resolveAttributeEntries(env, identity, input.attributes);
   await assertOwnedImage(env, identity, input.imageKey);
   const now = new Date().toISOString();
   const statements = [
     env.DB.prepare(`
       UPDATE articles
       SET title = ?, type = ?, summary = ?, content = ?, visibility = ?,
-        parent_id = ?, image_key = ?, tags_json = ?, updated_at = ?
+        parent_id = ?, image_key = ?, tags_json = ?, story_categories_json = ?,
+        is_hidden_story = ?, main_story_id = ?, updated_at = ?
       WHERE id = ? AND owner_id = ?
     `).bind(input.title, input.type, input.summary, input.content, input.visibility,
-      parentId, input.imageKey, JSON.stringify(input.tags), now, id, identity.id),
+      parentId, input.imageKey, JSON.stringify(input.tags), JSON.stringify(input.storyCategories),
+      input.isHiddenStory ? 1 : 0, input.mainStoryId || null, now, id, owner.id),
     env.DB.prepare("DELETE FROM article_links WHERE source_id = ?").bind(id),
-    ...relatedIds.map((targetId) => env.DB.prepare(
-      "INSERT INTO article_links (source_id, target_id, created_at) VALUES (?, ?, ?)"
-    ).bind(id, targetId, now))
+    ...relations.map(({ targetId, label }) => env.DB.prepare(
+      "INSERT INTO article_links (source_id, target_id, relation_label, created_at) VALUES (?, ?, ?, ?)"
+    ).bind(id, targetId, label, now)),
+    env.DB.prepare("DELETE FROM story_attribute_links WHERE story_id = ?").bind(id),
+    ...attributes.filter((attribute) => attribute.isNew).map((attribute) => env.DB.prepare(`
+      INSERT INTO attribute_entries (id, slug, title, type, summary, content, visibility, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(attribute.id, attribute.slug, attribute.title, attribute.type, attribute.summary, attribute.content, input.visibility, now, now)),
+    ...attributes.map((attribute) => env.DB.prepare(`
+      INSERT INTO story_attribute_links (story_id, attribute_id, created_at)
+      VALUES (?, ?, ?)
+    `).bind(id, attribute.id, now))
   ];
   await env.DB.batch(statements);
-  return getArticle(env, identity, id);
+  return getArticle(env, owner, id);
 }
 
 async function uploadImage(request, env, identity) {
@@ -559,13 +1181,16 @@ async function imageResponse(env, key) {
 }
 
 async function deleteArticle(env, identity, id) {
+  const owner = await getManagedOwner(env, identity, id);
+  if (!owner) return false;
   const article = await env.DB.prepare("SELECT id, parent_id, image_key FROM articles WHERE id = ? AND owner_id = ?")
-    .bind(id, identity.id).first();
+    .bind(id, owner.id).first();
   if (!article) return false;
   await env.DB.batch([
-    env.DB.prepare("UPDATE articles SET parent_id = ?, updated_at = ? WHERE parent_id = ? AND owner_id = ?")
-      .bind(article.parent_id, new Date().toISOString(), id, identity.id),
-    env.DB.prepare("DELETE FROM articles WHERE id = ? AND owner_id = ?").bind(id, identity.id)
+    env.DB.prepare("UPDATE articles SET parent_id = ?, updated_at = ? WHERE parent_id = ? AND owner_id IN (?, ?)")
+      .bind(article.parent_id, new Date().toISOString(), id, identity.id, PUBLIC_AUTHOR_ID),
+    env.DB.prepare("UPDATE articles SET main_story_id = NULL WHERE main_story_id = ?").bind(id),
+    env.DB.prepare("DELETE FROM articles WHERE id = ? AND owner_id = ?").bind(id, owner.id)
   ]);
   if (article.image_key) {
     const usage = await env.DB.prepare("SELECT COUNT(*) AS count FROM articles WHERE image_key = ?")
@@ -576,38 +1201,85 @@ async function deleteArticle(env, identity, id) {
 }
 
 async function importArticles(env, identity, body) {
-  const source = Array.isArray(body.articles) ? body.articles : Array.isArray(body.notes) ? body.notes : null;
+  const source = Array.isArray(body.articles) ? body.articles
+    : Array.isArray(body.notes) ? body.notes
+      : Array.isArray(body.attributes) ? [] : null;
   if (!source) throw new InputError("Cadangan harus berisi daftar artikel.");
   if (source.length > 300) throw new InputError("Impor dibatasi maksimal 300 artikel per berkas.");
+  if (body.attributes !== undefined && !Array.isArray(body.attributes)) {
+    throw new InputError("Daftar artikel atribut dalam cadangan tidak valid.");
+  }
+  const standaloneSource = Array.isArray(body.attributes) ? body.attributes : [];
+  if (standaloneSource.length > 500) throw new InputError("Impor dibatasi maksimal 500 artikel atribut per berkas.");
   const ids = source.map((item) => item?.id);
   if (ids.some((id) => typeof id !== "string" || !id || id.length > 100) || new Set(ids).size !== ids.length) {
     throw new InputError("Setiap artikel cadangan harus memiliki ID unik yang valid.");
   }
+  const currentRows = await env.DB.prepare("SELECT id, parent_id, owner_id FROM articles WHERE owner_id IN (?, ?)")
+    .bind(identity.id, PUBLIC_AUTHOR_ID).all();
+  const existingIds = new Set(currentRows.results.map((row) => row.id));
   if (ids.length) {
     const placeholders = ids.map(() => "?").join(",");
-    const existing = await env.DB.prepare(
-      `SELECT COUNT(*) AS count FROM articles WHERE owner_id = ? AND id IN (${placeholders})`
-    ).bind(identity.id, ...ids).first();
-    if (Number(existing?.count) > 0) {
-      throw new InputError("Ada ID artikel yang sudah ada. Ekspor artikel yang ada sebelum menggabungkan berkas ini.");
+    const conflicts = await env.DB.prepare(
+      `SELECT id, owner_id FROM articles WHERE id IN (${placeholders})`
+    ).bind(...ids).all();
+    if (conflicts.results.some((row) => !existingIds.has(row.id))) {
+      throw new InputError("Cadangan memiliki ID artikel yang tidak dapat dikelola akun ini.");
     }
   }
-  const currentRows = await env.DB.prepare("SELECT id, parent_id FROM articles WHERE owner_id = ?")
-    .bind(identity.id).all();
-  const existingIds = new Set(currentRows.results.map((row) => row.id));
   const importedIds = new Set(ids);
+  const importedAttributes = new Map();
+  const importedAttributeDefinitions = new Map();
+  const resolveImportedAttribute = (raw, input) => {
+    const definition = JSON.stringify([input.title, input.type, input.summary, input.content]);
+    const sourceId = typeof raw.id === "string" && raw.id.trim() ? raw.id.trim() : "";
+    if (sourceId.length > 100) throw new InputError("ID atribut dalam cadangan tidak valid.");
+    const key = sourceId ? `id:${sourceId}` : `definition:${definition}`;
+    const existing = importedAttributes.get(key);
+    if (existing) {
+      if (JSON.stringify([existing.title, existing.type, existing.summary, existing.content]) !== definition) {
+        throw new InputError(`Atribut “${input.title}” memiliki isi yang berbeda pada cadangan.`);
+      }
+      return existing;
+    }
+    if (!sourceId && importedAttributeDefinitions.has(definition)) {
+      return importedAttributeDefinitions.get(definition);
+    }
+    const id = sourceId || crypto.randomUUID();
+    const imported = {
+      ...input,
+      id,
+      slug: `${slugBase(input.title)}-${id.slice(0, 8)}`
+    };
+    importedAttributes.set(key, imported);
+    importedAttributeDefinitions.set(definition, imported);
+    return imported;
+  };
+  for (const item of standaloneSource) {
+    const attribute = validateAttributeInput(item);
+    resolveImportedAttribute(item, attribute);
+  }
   const normalized = source.map((item) => {
+    const rawAttributes = Array.isArray(item.attributes) ? item.attributes : [];
     const input = validateArticleInput({
       ...item,
-      visibility: "draft",
+      attributes: rawAttributes.map(({ id: _id, slug: _slug, visibility: _visibility, ...attribute }) => attribute),
       imageKey: ""
     });
     const id = item.id;
+    const attributes = input.attributes.map((attribute, index) => {
+      const raw = rawAttributes[index] || {};
+      return resolveImportedAttribute(raw, {
+        ...attribute,
+        visibility: raw.visibility === "published" ? "published" : "draft"
+      });
+    });
     return {
       id,
       ownerId: identity.id,
       slug: `${slugBase(input.title)}-${crypto.randomUUID().slice(0, 8)}`,
       ...input,
+      attributes,
       parentId: input.parentId || null
     };
   });
@@ -617,8 +1289,11 @@ async function importArticles(env, identity, body) {
     if (article.relatedIds.includes(article.id)) {
       throw new InputError(`Artikel “${article.title}” tidak boleh terhubung dengan dirinya sendiri.`);
     }
-    const references = [article.parentId, ...article.relatedIds].filter(Boolean);
-    relationCount += article.relatedIds.length;
+    if (article.mainStoryId === article.id) {
+      throw new InputError(`Cerita “${article.title}” tidak bisa menjadi cerita utama untuk dirinya sendiri.`);
+    }
+    const references = [article.parentId, article.mainStoryId, ...article.relatedIds].filter(Boolean);
+    relationCount += article.relations.length;
     if (relationCount > 1000) throw new InputError("Impor dibatasi maksimal 1.000 hubungan antarartikel.");
     if (references.some((id) => !importedIds.has(id) && !existingIds.has(id))) {
       throw new InputError(`Artikel “${article.title}” terhubung ke artikel yang tidak ditemukan.`);
@@ -631,37 +1306,84 @@ async function importArticles(env, identity, body) {
       parentId = importedById.get(parentId).parentId;
     }
     if (parentId) {
-      let existingParent = await env.DB.prepare("SELECT parent_id FROM articles WHERE id = ? AND owner_id = ?")
-        .bind(parentId, identity.id).first();
+      let existingParent = await env.DB.prepare("SELECT parent_id FROM articles WHERE id = ? AND owner_id IN (?, ?)")
+        .bind(parentId, identity.id, PUBLIC_AUTHOR_ID).first();
       while (existingParent?.parent_id) {
         if (seen.has(existingParent.parent_id)) throw new InputError("Hubungan parent dalam cadangan membentuk lingkaran.");
         seen.add(existingParent.parent_id);
-        existingParent = await env.DB.prepare("SELECT parent_id FROM articles WHERE id = ? AND owner_id = ?")
-          .bind(existingParent.parent_id, identity.id).first();
+        existingParent = await env.DB.prepare("SELECT parent_id FROM articles WHERE id = ? AND owner_id IN (?, ?)")
+          .bind(existingParent.parent_id, identity.id, PUBLIC_AUTHOR_ID).first();
       }
     }
   }
 
   const now = new Date().toISOString();
   const statements = [];
+  const importedAttributeRows = [...importedAttributes.values()];
+  for (const attribute of importedAttributeRows) {
+    const existing = await env.DB.prepare("SELECT id FROM attribute_entries WHERE id = ?").bind(attribute.id).first();
+    if (existing) {
+      statements.push(env.DB.prepare(`
+        UPDATE attribute_entries
+        SET title = ?, type = ?, summary = ?, content = ?, visibility = ?, updated_at = ?
+        WHERE id = ?
+      `).bind(attribute.title, attribute.type, attribute.summary, attribute.content, attribute.visibility, now, attribute.id));
+    } else {
+      statements.push(env.DB.prepare(`
+        INSERT INTO attribute_entries (id, slug, title, type, summary, content, visibility, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(attribute.id, attribute.slug, attribute.title, attribute.type, attribute.summary, attribute.content, attribute.visibility, now, now));
+    }
+  }
+  for (const article of normalized) {
+    if (existingIds.has(article.id)) {
+      statements.push(env.DB.prepare(`
+        UPDATE articles
+        SET title = ?, type = ?, summary = ?, content = ?, visibility = ?,
+          tags_json = ?, story_categories_json = ?, is_hidden_story = ?, updated_at = ?
+        WHERE id = ? AND owner_id IN (?, ?)
+      `).bind(article.title, article.type, article.summary, article.content, article.visibility,
+        JSON.stringify(article.tags), JSON.stringify(article.storyCategories),
+        article.isHiddenStory ? 1 : 0, now,
+        article.id, identity.id, PUBLIC_AUTHOR_ID));
+    } else {
+      statements.push(env.DB.prepare(`
+        INSERT INTO articles (
+          id, owner_id, slug, title, type, summary, content, visibility,
+          parent_id, image_key, tags_json, story_categories_json, is_hidden_story, main_story_id,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, '', ?, ?, ?, NULL, ?, ?)
+      `).bind(article.id, identity.id, article.slug, article.title, article.type, article.summary,
+        article.content, article.visibility, JSON.stringify(article.tags),
+        JSON.stringify(article.storyCategories), article.isHiddenStory ? 1 : 0,
+        article.createdAt || now, now));
+    }
+  }
   for (const article of normalized) {
     statements.push(env.DB.prepare(`
-      INSERT INTO articles (
-        id, owner_id, slug, title, type, summary, content, visibility,
-        parent_id, image_key, tags_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, '', ?, ?, ?)
-    `).bind(article.id, identity.id, article.slug, article.title, article.type, article.summary,
-      article.content, article.parentId, JSON.stringify(article.tags),
-      article.createdAt || now, now));
-    for (const targetId of article.relatedIds) {
+      UPDATE articles SET parent_id = ?, main_story_id = ? WHERE id = ?
+    `).bind(article.parentId, article.mainStoryId || null, article.id));
+  }
+  for (const article of normalized) {
+    statements.push(env.DB.prepare("DELETE FROM article_links WHERE source_id = ?").bind(article.id));
+    statements.push(env.DB.prepare("DELETE FROM story_attribute_links WHERE story_id = ?").bind(article.id));
+  }
+  for (const article of normalized) {
+    for (const { targetId, label } of article.relations) {
       statements.push(env.DB.prepare(
-        "INSERT INTO article_links (source_id, target_id, created_at) VALUES (?, ?, ?)"
-      ).bind(article.id, targetId, now));
+        "INSERT INTO article_links (source_id, target_id, relation_label, created_at) VALUES (?, ?, ?, ?)"
+      ).bind(article.id, targetId, label, now));
+    }
+    for (const attribute of article.attributes) {
+      statements.push(env.DB.prepare(`
+        INSERT INTO story_attribute_links (story_id, attribute_id, created_at)
+        VALUES (?, ?, ?)
+      `).bind(article.id, attribute.id, now));
     }
   }
   if (statements.length) await env.DB.batch(statements);
   const skippedImages = source.filter((item) => item.imageUrl || item.imageKey).length;
-  return { count: normalized.length, skippedImages };
+  return { count: normalized.length, attributeCount: importedAttributeRows.length, skippedImages };
 }
 
 async function handleAdmin(request, env, url, method, path) {
@@ -677,6 +1399,13 @@ async function handleAdmin(request, env, url, method, path) {
     return json({ profile: { ...profile, displayName } });
   }
   if (path === "/api/admin/articles" && method === "GET") return json(await getAdminArticles(env, identity));
+  if (path === "/api/admin/attributes" && method === "GET") return json(await getAdminAttributeEntries(env));
+  if (path === "/api/admin/attributes" && method === "POST") {
+    const input = validateAttributeInput(await readJson(request));
+    const id = await createAttributeEntry(env, input);
+    const entry = await env.DB.prepare("SELECT * FROM attribute_entries WHERE id = ?").bind(id).first();
+    return json(attributeEntryFromRow(entry), 201);
+  }
   if (path === "/api/admin/articles" && method === "POST") {
     return json(await createArticle(env, identity, await readJson(request)), 201);
   }
@@ -691,7 +1420,12 @@ async function handleAdmin(request, env, url, method, path) {
     return image ? imageResponse(env, key) : new Response("Not found", { status: 404 });
   }
   if (path === "/api/admin/export" && method === "GET") {
-    return json({ version: 1, exportedAt: new Date().toISOString(), articles: await getAdminArticles(env, identity) });
+    return json({
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      articles: await getAdminArticles(env, identity),
+      attributes: await getAdminAttributeEntries(env)
+    });
   }
   if (path === "/api/admin/import" && method === "POST") {
     return json(await importArticles(env, identity, await readJson(request, 20 * 1024 * 1024)));
@@ -716,6 +1450,19 @@ async function handleAdmin(request, env, url, method, path) {
         : errorResponse("Artikel tidak ditemukan.", 404);
     }
   }
+  const attributeMatch = path.match(/^\/api\/admin\/attributes\/([^/]+)$/);
+  if (attributeMatch && (method === "PUT" || method === "DELETE")) {
+    const id = decodeURIComponent(attributeMatch[1]);
+    if (method === "DELETE") {
+      return (await deleteAttributeEntry(env, id))
+        ? new Response(null, { status: 204 })
+        : errorResponse("Entri atribut tidak ditemukan.", 404);
+    }
+    const input = validateAttributeInput(await readJson(request));
+    if (!await updateAttributeEntry(env, id, input)) return errorResponse("Entri atribut tidak ditemukan.", 404);
+    const entry = await env.DB.prepare("SELECT * FROM attribute_entries WHERE id = ?").bind(id).first();
+    return json(attributeEntryFromRow(entry));
+  }
   return errorResponse("Endpoint tidak ditemukan.", 404);
 }
 
@@ -734,6 +1481,62 @@ async function route(request, env) {
   }
   if (path === "/api/public/articles" && method === "GET") {
     return json(await publicArticles(env, url.searchParams.get("q") || ""));
+  }
+  if (path === "/api/public/attributes" && method === "GET") {
+    return json(await getPublicAttributeEntries(env));
+  }
+  if (path === "/api/public/attributes" && method === "POST") {
+    try {
+      const input = validateAttributeInput(await readJson(request), "published");
+      await limitPublicSubmission(env, request);
+      const id = await createAttributeEntry(env, input);
+      const entry = await env.DB.prepare("SELECT * FROM attribute_entries WHERE id = ?").bind(id).first();
+      return json(attributeEntryFromRow(entry), 201);
+    } catch (error) {
+      if (error instanceof InputError) return errorResponse(error.message, error.status);
+      throw error;
+    }
+  }
+  const publicAttributeMatch = path.match(/^\/api\/public\/attributes\/([^/]+)$/);
+  if (publicAttributeMatch && method === "GET") {
+    const attribute = await getPublicAttribute(env, decodeURIComponent(publicAttributeMatch[1]));
+    return attribute ? json(attribute) : errorResponse("Atribut tidak ditemukan.", 404);
+  }
+  if (path === "/api/public/articles" && method === "POST") {
+    try {
+      return json(await createPublicArticle(env, request, await readJson(request, 1024 * 1024)), 201);
+    } catch (error) {
+      if (error instanceof InputError) return errorResponse(error.message, error.status);
+      throw error;
+    }
+  }
+  if (path === "/api/public/playlists" && method === "GET") {
+    return json(await publicPlaylists(env));
+  }
+  if (path === "/api/public/playlists" && method === "POST") {
+    try {
+      return json(await createPublicPlaylist(env, request, await readJson(request)), 201);
+    } catch (error) {
+      if (error instanceof InputError) return errorResponse(error.message, error.status);
+      throw error;
+    }
+  }
+  const publicPlaylistMatch = path.match(/^\/api\/public\/playlists\/([^/]+)$/);
+  if (publicPlaylistMatch) {
+    const id = decodeURIComponent(publicPlaylistMatch[1]);
+    try {
+      if (method === "GET") {
+        const playlist = await getPublicPlaylist(env, id);
+        return playlist ? json(playlist) : errorResponse("Playlist tidak ditemukan.", 404);
+      }
+      if (method === "PUT") {
+        const playlist = await updatePublicPlaylist(env, request, id, await readJson(request));
+        return playlist ? json(playlist) : errorResponse("Playlist tidak ditemukan.", 404);
+      }
+    } catch (error) {
+      if (error instanceof InputError) return errorResponse(error.message, error.status);
+      throw error;
+    }
   }
   if (path.startsWith("/api/")) return errorResponse("Endpoint tidak ditemukan.", 404);
   if (path.startsWith("/article/") && method === "GET") {

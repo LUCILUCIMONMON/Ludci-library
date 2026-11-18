@@ -17,12 +17,14 @@
         </a>
         <nav class="primary-nav" aria-label="Navigasi utama">
           <a class="nav-link" href="/" data-nav="home">Beranda</a>
-          <a class="nav-link" href="/#/all" data-nav="all">Semua artikel <span class="nav-count" id="note-count">0</span></a>
+          <a class="nav-link" href="/#/all" data-nav="all">Semua cerita <span class="nav-count" id="note-count">0</span></a>
           <a class="nav-link" href="/#/type/Dunia">Dunia</a>
           <a class="nav-link" href="/#/type/Karakter">Karakter</a>
           <a class="nav-link" href="/#/type/Alur">Alur</a>
           <a class="nav-link" href="/#/type/Tempat">Tempat</a>
           <a class="nav-link" href="/#/type/Catatan">Lainnya</a>
+          <a class="nav-link" href="/#/attributes" data-nav="attributes">Atribut</a>
+          <a class="nav-link" href="/#/playlists" data-nav="playlists">Playlist</a>
         </nav>
         <div class="header-tools">
           <a class="nav-link" id="admin-link" href="/admin">Masuk</a>
@@ -33,7 +35,8 @@
               <button id="import-button" type="button">Impor cadangan</button>
             </div>
           </details>
-          <button class="button button-primary button-add" id="add-button" type="button"><span aria-hidden="true">＋</span> Artikel baru</button>
+          <button class="button button-primary button-add" id="add-button" type="button"><span aria-hidden="true">＋</span> Tulis cerita</button>
+          <button class="button button-quiet button-add" id="add-attribute-button" type="button"><span aria-hidden="true">＋</span> Tulis atribut</button>
         </div>
       </div>
       <div class="header-search-row">
@@ -41,7 +44,7 @@
           <div class="wiki-caption"><span class="caption-mark" aria-hidden="true">▤</span><span id="topbar-context">PORTAL CERITA &amp; GAGASAN</span></div>
           <label class="search-box">
             <span aria-hidden="true">⌕</span>
-            <input id="search-input" type="search" placeholder="Cari di Lucimon Library" autocomplete="off" aria-label="Cari artikel">
+            <input id="search-input" type="search" placeholder="Cari cerita dan atribut" autocomplete="off" aria-label="Cari cerita dan atribut">
             <kbd>/</kbd>
           </label>
         </div>
@@ -57,34 +60,62 @@
     <dialog id="note-dialog" class="note-dialog">
       <form id="note-form">
         <div class="dialog-header">
-          <div><div class="eyebrow">LUCIMON LIBRARY</div><h2 id="dialog-title">Artikel baru</h2></div>
+          <div><div class="eyebrow">LUCIMON LIBRARY</div><h2 id="dialog-title">Cerita baru</h2></div>
           <button class="icon-button" id="close-dialog" type="button" aria-label="Tutup">×</button>
         </div>
+        <div id="public-publication-notice" hidden>
+          <small class="field-hint">Cerita langsung terlihat oleh semua orang. Kiriman tanpa akun tidak mendukung unggahan gambar.</small>
+        </div>
         <input id="field-id" type="hidden">
-        <label class="field-label" for="field-title">Judul <span>*</span></label>
+        <label class="field-label" for="field-title">Judul cerita <span>*</span></label>
         <input class="text-field" id="field-title" name="title" maxlength="120" required placeholder="Contoh: Kota yang hidup di atas awan">
         <div class="field-row">
           <div class="field-group">
-            <label class="field-label" for="field-type">Jenis artikel</label>
+            <label class="field-label" for="field-type">Jenis entri</label>
             <select class="text-field" id="field-type" name="type">
               <option>Dunia</option><option>Karakter</option><option>Alur</option><option>Tempat</option><option>Catatan</option>
             </select>
           </div>
-          <div class="field-group">
-            <label class="field-label" for="field-parent">Bagian dari <span class="optional">(opsional)</span></label>
-            <select class="text-field" id="field-parent" name="parentId"><option value="">Tidak ada (artikel utama)</option></select>
+          <div class="field-group" data-admin-only>
+            <label class="field-label" for="field-parent">Cerita induk <span class="optional">(opsional)</span></label>
+            <select class="text-field" id="field-parent" name="parentId"><option value="">Tidak ada (cerita utama)</option></select>
           </div>
         </div>
-        <label class="field-label" for="field-visibility">Status artikel</label>
-        <select class="text-field" id="field-visibility" name="visibility">
-          <option value="draft">Draf — hanya terlihat oleh saya</option>
-          <option value="published">Terbit — bisa dibaca tanpa akun</option>
-        </select>
-        <label class="field-label" for="field-summary">Ringkasan <span class="optional">(memudahkan AI memahami artikel)</span></label>
-        <textarea class="text-field summary-field" id="field-summary" name="summary" maxlength="500" rows="2" placeholder="Inti artikel ini dalam beberapa kalimat…"></textarea>
-        <label class="field-label" for="field-content">Isi artikel</label>
-        <div class="field-label" id="content-label">Isi artikel</div>
-        <div class="editor-toolbar" role="toolbar" aria-label="Format isi artikel">
+        <fieldset class="story-category-field">
+          <legend class="field-label">Kategori cerita</legend>
+          <div class="story-category-options">
+            <label><input type="checkbox" name="storyCategories" value="Canon" checked> Canon</label>
+            <label><input type="checkbox" name="storyCategories" value="Alternative"> Alternative</label>
+            <label><input type="checkbox" name="storyCategories" value="Retelling"> Retelling</label>
+            <label><input type="checkbox" name="storyCategories" value="Sidequel"> Sidequel</label>
+            <label><input type="checkbox" name="storyCategories" value="Spin-off"> Spin-off</label>
+            <label><input type="checkbox" name="storyCategories" value="Reboot"> Reboot</label>
+            <label><input type="checkbox" name="storyCategories" value="Restart"> Restart</label>
+            <label><input type="checkbox" name="storyCategories" value="What if"> What if</label>
+          </div>
+          <small class="field-hint">Bisa pilih lebih dari satu kategori. Canon adalah jalur utama; kategori lain dapat ditautkan ke cerita utama.</small>
+        </fieldset>
+        <div class="field-group">
+          <label class="field-label" for="field-main-story">Cerita utama <span class="optional">(opsional)</span></label>
+          <select class="text-field" id="field-main-story" name="mainStoryId"><option value="">Tidak ditautkan ke cerita utama tertentu</option></select>
+          <small class="field-hint">Berbeda dari cerita induk, ini menunjuk cerita canon/utama yang menjadi acuan jalur cerita ini.</small>
+        </div>
+        <label class="hidden-story-toggle">
+          <input type="checkbox" id="field-hidden-story" name="isHiddenStory">
+          <span><strong>Cerita tersembunyi · lore rahasia</strong><small>Ini label naratif untuk rahasia di dalam cerita, bukan menyembunyikan halaman atau tautannya.</small></span>
+        </label>
+        <div data-admin-only>
+          <label class="field-label" for="field-visibility">Status cerita</label>
+          <select class="text-field" id="field-visibility" name="visibility">
+            <option value="draft">Draf — hanya terlihat oleh saya</option>
+            <option value="published">Terbit — bisa dibaca tanpa akun</option>
+          </select>
+        </div>
+        <label class="field-label" for="field-summary">Ringkasan cerita</label>
+        <textarea class="text-field summary-field" id="field-summary" name="summary" maxlength="500" rows="2" placeholder="Inti cerita ini dalam beberapa kalimat…"></textarea>
+        <label class="field-label" for="field-content">Isi cerita</label>
+        <div class="field-label" id="content-label">Isi cerita</div>
+        <div class="editor-toolbar" role="toolbar" aria-label="Format isi cerita">
           <label class="editor-style-label" for="editor-block-style">Gaya</label>
           <select class="editor-style" id="editor-block-style" aria-label="Gaya paragraf">
             <option value="p">Paragraf</option>
@@ -104,24 +135,111 @@
           <button class="editor-tool" type="button" data-command="insertHorizontalRule" aria-label="Garis pemisah" title="Garis pemisah">―</button>
         </div>
         <div class="text-field rich-editor" id="field-content" contenteditable="true" role="textbox" aria-multiline="true" aria-labelledby="content-label" data-placeholder="Mulai tulis ceritamu di sini…"></div>
-        <small class="field-hint">Tulis isi cerita. Pilih teks lalu gunakan tombol format seperti di Word.</small>
-        <label class="field-label" for="field-image">Gambar atau thumbnail</label>
-        <input class="text-field file-field" id="field-image" type="file" accept="image/jpeg,image/png,image/webp,image/gif">
-        <small class="field-hint">JPEG, PNG, WebP, atau GIF. Maksimal 1 MB. Gambar disimpan di D1.</small>
-        <div class="image-preview-wrap" id="image-preview-wrap" hidden>
-          <img id="image-preview" alt="Pratinjau gambar artikel">
-          <button class="button button-quiet" id="remove-image" type="button">Hapus gambar</button>
+        <small class="field-hint">Tulis cerita dan gunakan tombol format bila perlu.</small>
+        <div data-admin-only>
+          <label class="field-label" for="field-image">Gambar atau thumbnail</label>
+          <input class="text-field file-field" id="field-image" type="file" accept="image/jpeg,image/png,image/webp,image/gif">
+          <small class="field-hint">JPEG, PNG, WebP, atau GIF. Maksimal 1 MB. Gambar disimpan di D1.</small>
+          <div class="image-preview-wrap" id="image-preview-wrap" hidden>
+            <img id="image-preview" alt="Pratinjau gambar cerita">
+            <button class="button button-quiet" id="remove-image" type="button">Hapus gambar</button>
+          </div>
         </div>
-        <label class="field-label" for="related-search">Terhubung dengan <span class="optional">(opsional, bisa pilih banyak)</span></label>
-        <input class="text-field related-search" id="related-search" type="search" placeholder="Cari artikel untuk dihubungkan…" autocomplete="off">
-        <div class="related-selected-count" id="related-selected-count" aria-live="polite">Belum ada artikel yang dipilih.</div>
-        <div class="related-options" id="related-options" role="group" aria-describedby="related-hint"></div>
-        <small class="field-hint" id="related-hint">Centang sebanyak artikel yang ingin dihubungkan. Kosongkan jika cerita berdiri sendiri.</small>
+        <div>
+          <label class="field-label" for="related-search">Hubungan dengan cerita lain <span class="optional">(bisa pilih banyak)</span></label>
+          <input class="text-field related-search" id="related-search" type="search" placeholder="Cari cerita…" autocomplete="off">
+          <div class="related-selected-count" id="related-selected-count" aria-live="polite">Belum ada cerita yang dipilih.</div>
+          <div class="related-options" id="related-options" role="group" aria-describedby="related-hint"></div>
+          <small class="field-hint" id="related-hint">Pilih satu atau beberapa cerita, lalu beri label hubungan seperti “saudara dari” atau “bermusuhan dengan”.</small>
+        </div>
+        <div class="story-attributes">
+          <div class="field-label">Artikel atribut yang ditautkan ke cerita</div>
+          <div id="attributes-list" class="attributes-list"></div>
+          <label class="field-label" for="attribute-search">Cari atribut yang sudah ada</label>
+          <input class="text-field" id="attribute-search" type="search" placeholder="Cari nama, jenis, atau ringkasan atribut…" autocomplete="off">
+          <div class="playlist-add-row">
+            <select class="text-field" id="attribute-select"></select>
+            <button class="button button-quiet" id="add-existing-attribute" type="button">Pakai atribut</button>
+          </div>
+          <button class="button button-quiet" id="toggle-new-attribute" type="button">＋ Buat atribut untuk cerita ini</button>
+          <div id="new-attribute-form" class="new-attribute-form" hidden>
+            <label class="field-label" for="attribute-title">Nama entri <span>*</span></label>
+            <input class="text-field" id="attribute-title" maxlength="120" placeholder="Contoh: Rana">
+            <label class="field-label" for="attribute-type">Jenis entri</label>
+            <select class="text-field" id="attribute-type">
+              <option>Dunia</option><option>Karakter</option><option>Alur</option><option>Tempat</option><option>Catatan</option>
+            </select>
+            <label class="field-label" for="attribute-summary">Ringkasan</label>
+            <textarea class="text-field summary-field" id="attribute-summary" maxlength="500" rows="2" placeholder="Ringkasan singkat tentang entri ini"></textarea>
+            <label class="field-label" for="attribute-content">Deskripsi entri</label>
+            <textarea class="text-field" id="attribute-content" rows="5" placeholder="Jelaskan tokoh, tempat, dunia, alur, atau konsep ini…"></textarea>
+            <button class="button button-primary" id="create-attribute-entry" type="button">Buat dan tautkan ke cerita</button>
+          </div>
+          <small class="field-hint">Atribut adalah artikel mandiri tentang karakter, dunia, konsep, atau hal lain. Pilih atribut yang sudah terbit untuk menautkannya ke cerita; hubungan cerita-ke-cerita tetap di bagian Relasi.</small>
+        </div>
         <label class="field-label" for="field-tags">Tag <span class="optional">(pisahkan dengan koma)</span></label>
         <input class="text-field" id="field-tags" name="tags" placeholder="misalnya: sihir, masa lalu, konflik">
         <div class="dialog-actions">
           <button class="button button-quiet" id="cancel-dialog" type="button">Batal</button>
-          <button class="button button-primary" id="save-button" type="submit">Simpan artikel</button>
+          <button class="button button-primary" id="save-button" type="submit">Terbitkan cerita</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="attribute-dialog" class="note-dialog">
+      <form id="attribute-form">
+        <div class="dialog-header">
+          <div><div class="eyebrow">LUCIMON LIBRARY · ARTIKEL MANDIRI</div><h2 id="attribute-dialog-title">Atribut baru</h2></div>
+          <button class="icon-button" id="close-attribute-dialog" type="button" aria-label="Tutup">×</button>
+        </div>
+        <div id="attribute-publication-notice" hidden>
+          <small class="field-hint">Atribut akan langsung diterbitkan sebagai artikel mandiri. Tidak perlu ditautkan ke cerita.</small>
+        </div>
+        <input id="attribute-field-id" type="hidden">
+        <label class="field-label" for="standalone-attribute-title">Judul <span>*</span></label>
+        <input class="text-field" id="standalone-attribute-title" maxlength="120" required placeholder="Contoh: Rana, Dunia Arunika, atau Sistem Sihir">
+        <label class="field-label" for="standalone-attribute-type">Jenis entri</label>
+        <select class="text-field" id="standalone-attribute-type">
+          <option>Dunia</option><option>Karakter</option><option>Alur</option><option>Tempat</option><option>Catatan</option>
+        </select>
+        <div data-attribute-admin-only>
+          <label class="field-label" for="standalone-attribute-visibility">Status</label>
+          <select class="text-field" id="standalone-attribute-visibility">
+            <option value="draft">Draf — hanya terlihat di ruang pengelola</option>
+            <option value="published">Terbit — bisa dibaca tanpa akun</option>
+          </select>
+        </div>
+        <label class="field-label" for="standalone-attribute-summary">Ringkasan</label>
+        <textarea class="text-field summary-field" id="standalone-attribute-summary" maxlength="500" rows="2" placeholder="Ringkasan singkat entri ini"></textarea>
+        <label class="field-label" for="standalone-attribute-content">Deskripsi</label>
+        <textarea class="text-field" id="standalone-attribute-content" rows="9" placeholder="Tulis tentang karakter, dunia, konsep, atau hal lain…"></textarea>
+        <div class="dialog-actions">
+          <button class="button button-quiet" id="cancel-attribute-dialog" type="button">Batal</button>
+          <button class="button button-primary" id="save-attribute-button" type="submit">Terbitkan atribut</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="playlist-dialog" class="note-dialog">
+      <form id="playlist-form">
+        <div class="dialog-header">
+          <div><div class="eyebrow">LUCIMON LIBRARY · PLAYLIST</div><h2 id="playlist-dialog-title">Playlist baru</h2></div>
+          <button class="icon-button" id="close-playlist-dialog" type="button" aria-label="Tutup">×</button>
+        </div>
+        <label class="field-label" for="playlist-title">Nama playlist <span>*</span></label>
+        <input class="text-field" id="playlist-title" maxlength="100" required placeholder="Contoh: Perjalanan sang penjaga">
+        <label class="field-label" for="playlist-description">Deskripsi</label>
+        <textarea class="text-field summary-field" id="playlist-description" maxlength="500" rows="2" placeholder="Urutan atau tema kumpulan cerita ini"></textarea>
+        <label class="field-label" for="playlist-story-select">Tambahkan cerita</label>
+        <div class="playlist-add-row">
+          <select class="text-field" id="playlist-story-select"></select>
+          <button class="button button-quiet" id="playlist-add-story" type="button">Tambah</button>
+        </div>
+        <ol id="playlist-items-list" class="playlist-items-list"></ol>
+        <small class="field-hint">Urutan cerita di sini menentukan urutan playlist. Semua orang dapat membuat dan mengubah playlist publik.</small>
+        <div class="dialog-actions">
+          <button class="button button-quiet" id="cancel-playlist-dialog" type="button">Batal</button>
+          <button class="button button-primary" id="save-playlist-button" type="submit">Terbitkan playlist</button>
         </div>
       </form>
     </dialog>
