@@ -1,0 +1,2 @@
+ALTER TABLE playlists
+  ADD COLUMN owner_id TEXT REFERENCES profiles(id) ON DELETE CASCADE;
